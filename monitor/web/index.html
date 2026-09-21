@@ -4,16 +4,31 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>music-monitor · 榜单歌单监控自动下载</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=20260921-platform-v3">
 </head>
 <body>
 
+<div class="auth-screen" id="auth-screen">
+  <div class="auth-card">
+    <div class="brand" style="font-size:24px">music-monitor<small>多用户音乐订阅与 LX 下载</small></div>
+    <h2 id="auth-title">登录</h2>
+    <p class="hint" id="auth-hint">请输入你的账号密码。</p>
+    <label class="field"><span>用户名</span><input type="text" id="auth-username" autocomplete="username"></label>
+    <label class="field" id="auth-display-row" style="display:none"><span>显示名称</span><input type="text" id="auth-display-name"></label>
+    <label class="field"><span>密码</span><input type="password" id="auth-password" autocomplete="current-password"></label>
+    <button class="btn primary" id="auth-submit" onclick="App.submitAuth()">登录</button>
+    <div id="auth-result" class="small" style="margin-top:10px"></div>
+  </div>
+</div>
+
 <header class="topbar">
-  <div class="brand">music-monitor<small>在 go-music-dl 之上做榜单 / 歌单 / 收藏夹监控</small></div>
+  <div class="brand">music-monitor<small>榜单 / 歌单 / 歌手订阅 · LX 音源自动下载</small></div>
   <span class="pill version-pill" id="app-version">版本检测中…</span>
   <div class="spacer"></div>
-  <span class="pill" id="engine-pill"><span class="dot"></span><span id="engine-text">检测中…</span></span>
+  <span class="pill" id="engine-pill"><span class="dot"></span><span id="engine-text">服务检测中…</span></span>
   <span class="pill" id="sched-pill"><span class="dot"></span><span id="sched-text">—</span></span>
+  <span class="pill" id="user-pill" style="display:none"><span id="user-text"></span></span>
+  <button class="btn small" id="logout-btn" style="display:none" onclick="App.logoutUser()">退出</button>
   <button class="btn small" onclick="App.refreshAll()">刷新</button>
 </header>
 
@@ -97,7 +112,7 @@
     <div class="card">
       <h2>监控个人收藏夹 / 我喜欢的音乐</h2>
       <p class="hint">
-        读取你在各平台账号下的歌单与收藏夹（需要先在 go-music-dl 的「设置」里扫码登录或粘贴 Cookie）。
+        读取当前用户在各平台账号下的歌单与收藏夹（先在“设置 → 我的平台账号”扫码登录）。
         勾选要持续跟踪的歌单即可创建监控。
       </p>
       <div class="chips" id="fav-platforms"></div>
@@ -112,6 +127,16 @@
 
   <!-- ============================ 下载记录 ============================ -->
   <section class="page" id="page-records">
+    <div class="card">
+      <div class="row"><div><h2>LX 实时下载</h2><p class="hint">显示正在取链、下载、校验及最近完成的任务；页面每 2 秒自动刷新。</p></div>
+        <div class="spacer"></div><button class="btn small" onclick="App.loadLxDownloads()">刷新</button>
+        <button class="btn small" onclick="App.clearLxDownloads()">清理已结束</button></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>歌曲</th><th>状态</th><th>音质/平台</th><th>进度</th><th>大小</th><th>文件/错误</th></tr></thead>
+        <tbody id="lx-download-body"><tr><td colspan="6" class="empty">暂无 LX 下载任务</td></tr></tbody>
+      </table></div>
+    </div>
+
     <div class="card">
       <h2>执行历史</h2>
       <div class="table-wrap"><table>
@@ -151,57 +176,142 @@
 
   <!-- ============================ 设置 ============================ -->
   <section class="page" id="page-settings">
+    <div class="card" id="user-admin-card" style="display:none">
+      <div class="row"><div><h2>用户与权限</h2><p class="hint">管理员创建用户、设置角色、停用账号或重置密码。</p></div><div class="spacer"></div><button class="btn small" onclick="App.loadUsers()">刷新</button></div>
+      <div id="user-list" class="table-wrap"><table><thead><tr><th>用户</th><th>角色</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="user-list-body"></tbody></table></div>
+      <div class="grid cols-3" style="margin-top:14px">
+        <label class="field"><span>用户名</span><input type="text" id="new-user-name"></label>
+        <label class="field"><span>显示名称</span><input type="text" id="new-user-display"></label>
+        <label class="field"><span>角色</span><select id="new-user-role"><option value="user">普通用户</option><option value="admin">管理员</option></select></label>
+        <label class="field"><span>初始密码</span><input type="password" id="new-user-password"></label>
+      </div>
+      <button class="btn primary" onclick="App.createUser()">创建用户</button>
+    </div>
+
+    <div class="card platform-account-card">
+      <div class="platform-account-heading">
+        <div>
+          <div class="eyebrow">ACCOUNT CENTER</div>
+          <h2>我的平台账号</h2>
+          <p class="hint">每个用户独立保存登录状态，用于读取自己的歌单、收藏夹与关注内容。</p>
+        </div>
+        <button class="btn account-btn secondary account-refresh" onclick="App.loadPlatformAccounts()">刷新状态</button>
+      </div>
+
+      <div class="platform-switcher" id="platform-switcher" role="tablist" aria-label="音乐平台">
+        <div class="platform-tabs-loading"><span class="spin">◌</span> 正在读取平台…</div>
+      </div>
+
+      <div class="platform-account-panel">
+        <section class="platform-profile" id="platform-profile" aria-live="polite">
+          <div class="platform-profile-loading"><span class="spin">◌</span> 正在读取账号状态…</div>
+        </section>
+
+        <section class="platform-login-box hidden" id="platform-login-box" style="display:none">
+          <div class="account-method-tabs" role="tablist" aria-label="登录方式">
+            <button class="account-method-tab active" id="account-method-tab-qr" onclick="App.switchPlatformMethod('qr')">扫码登录</button>
+            <button class="account-method-tab" id="account-method-tab-cookie" onclick="App.switchPlatformMethod('cookie')">Cookie 登录</button>
+          </div>
+
+          <div class="account-method-panel" id="account-method-qr">
+            <div class="method-title">使用官方 App 扫码</div>
+            <p class="hint" id="platform-qr-hint">二维码只用于本次登录，成功后凭据将加密保存。</p>
+            <div class="row" id="platform-qr-actions"></div>
+          </div>
+
+          <div class="account-method-panel hidden" id="account-method-cookie">
+            <div class="method-title">粘贴当前平台 Cookie</div>
+            <p class="hint">只会更新当前选中的平台；保存前会验证账号是否有效。</p>
+            <textarea id="platform-cookie-input" class="cookie-input mono" autocomplete="off" spellcheck="false" placeholder="在这里粘贴完整 Cookie"></textarea>
+            <div class="row">
+              <button class="btn account-btn primary" id="platform-cookie-save" onclick="App.savePlatformCookie()">验证并保存</button>
+              <span class="small muted">凭据加密存储，不会写入浏览器。</span>
+            </div>
+          </div>
+
+          <div id="platform-account-result" class="small muted account-result"></div>
+        </section>
+
+        <section class="platform-other-box hidden" id="platform-other-box" style="display:none">
+          <div class="other-platform-heading">
+            <span class="platform-logo other">+</span>
+            <div><h3>配置其他平台</h3><p>没有扫码协议的平台在这里通过 JSON 配置，保存成功后会自动追加独立标签。</p></div>
+          </div>
+          <div class="other-platform-supported" id="other-platform-supported"></div>
+          <label class="field other-json-field"><span>平台 Cookie JSON</span>
+            <textarea id="other-cookie-json" class="cookie-input mono" autocomplete="off" spellcheck="false" placeholder='{"kuwo":"kw_token=...","migu":"完整 Cookie"}'></textarea>
+          </label>
+          <div class="row">
+            <button class="btn account-btn primary" id="other-cookie-save" onclick="App.saveOtherPlatformCookies()">验证并保存</button>
+            <span class="small muted">平台标识目前支持 kuwo、migu。</span>
+          </div>
+          <div id="other-cookie-result" class="small muted account-result"></div>
+        </section>
+      </div>
+      <div class="credential-note">凭据保存位置：<span class="mono">CONFIG_DIR/users/&lt;用户 ID&gt;/credentials.enc</span>，账号之间完全隔离。</div>
+    </div>
+
     <div class="card">
-      <h2>音质说明（重要）</h2>
+      <h2>LX 下载说明</h2>
       <div class="notice">
-        go-music-dl 的下载接口没有「音质」参数，实际音质由<b>该平台账号的会员等级（Cookie）</b>决定。
-        本服务做的是：探测每首歌的真实码率 → 不达标就在其它平台找同曲目 → 在达标候选里挑最好的。
-        所以想要 FLAC 无损，必须先在 go-music-dl 里配置对应平台的会员 Cookie（网易云 / QQ / 酷狗支持扫码登录）。
+        音频下载默认通过 LX Music 自定义音源完成：先跨平台匹配正式版，再从最高档开始取链；
+        同档音源全部失败后自动降低一档。QQ/网易云公开歌单及个人收藏夹由本项目直连发现层解析，Cookie 按用户隔离。
       </div>
       <div class="grid cols-3" id="quality-help"></div>
     </div>
 
     <div class="card">
-      <h2>引擎连接</h2>
-      <div class="kv" id="engine-info"></div>
-      <div class="toolbar">
-        <button class="btn small" onclick="App.checkEngine()">重新检测</button>
-      </div>
-      <p class="hint">
-        引擎的搜索与下载接口本身是公开的，<b>不登录也能正常监控下载</b>。
-        只有「由本服务代写平台 Cookie / 改引擎设置」才需要登录引擎管理员账号。
-      </p>
-      <p class="hint">
-        账号密码错的话，引擎会返回登录页而不是会话，这里会明确报错——<b>不会再出现「乱输也提示登录成功」</b>。
-        登录成功才会把账号密码记下来，之后服务重启会自动用它重新登录；
-        就算会话中途失效（引擎重启 / 过期），也会<b>用保存的账号密码自动补登录</b>，不用你手动再来一遍。
-        输错一次密码不会把已经登录的会话弄丢。
-      </p>
       <div class="row">
-        <input type="text" id="engine-username" placeholder="引擎管理员账号" style="max-width:220px">
-        <input type="password" id="engine-password" placeholder="引擎管理员密码" style="max-width:220px">
-        <button class="btn" onclick="App.engineLogin()">登录引擎</button>
-        <button class="btn small" onclick="App.engineCookies()">查看已配置 Cookie</button>
-        <button class="btn small" onclick="App.engineLogout()">退出引擎登录</button>
+        <div><h2>LX 下载设置</h2><p class="hint">这些设置保存后立即对新任务生效，无需重启 monitor。</p></div>
+        <div class="spacer"></div>
+        <span class="pill" id="lx-status-pill"><span class="dot"></span><span id="lx-status-text">检测中…</span></span>
+        <button class="btn small" onclick="App.loadLxSettings()">刷新</button>
       </div>
-      <div id="engine-login-result" class="small muted" style="margin-top:10px"></div>
+      <div class="grid cols-3">
+        <label class="field admin-only"><span>调度心跳（秒）</span><input type="number" id="lx-tick-seconds" min="10" max="3600"></label>
+        <label class="field admin-only"><span>全局单轮硬上限（0=不限）</span><input type="number" id="lx-global-max" min="0" max="10000"></label>
+        <label class="field admin-only"><span>同时下载数</span><input type="number" id="lx-concurrency" min="1" max="16"></label>
+        <label class="field admin-only"><span>单曲重试次数</span><input type="number" id="lx-retries" min="0" max="10"></label>
+        <label class="field admin-only"><span>每批歌曲数</span><input type="number" id="lx-batch" min="1" max="100"></label>
+        <label class="field admin-only"><span>批次间隔（秒）</span><input type="number" id="lx-batch-gap" min="0" max="3600" step="0.5"></label>
+        <label class="field admin-only"><span>单曲超时（秒）</span><input type="number" id="lx-timeout" min="30" max="3600"></label>
+        <label class="field"><span>下载子目录</span><input type="text" id="lx-download-subdir" placeholder="留空表示下载根目录，如 charts/2026"></label>
+        <label class="field"><span>文件名模板</span><input type="text" id="lx-filename-template" placeholder="{artist} - {name}"></label>
+        <label class="field"><span>按歌手分文件夹</span><select id="lx-artist-dir"><option value="1">开启（推荐）</option><option value="0">关闭</option></select></label>
+        <label class="field admin-only"><span>平台优先顺序</span><input type="text" id="lx-priority" placeholder="tx,kg,kw,mg,wy"></label>
+        <label class="field admin-only"><span>最低允许音质</span>
+          <select id="lx-quality-floor">
+            <option value="master">超清母带</option><option value="atmos_plus">杜比 Plus</option>
+            <option value="atmos">杜比全景声</option><option value="hires">Hi-Res</option>
+            <option value="flac24bit">FLAC 24bit</option><option value="flac">FLAC</option>
+            <option value="320k">320K</option><option value="128k">128K</option>
+          </select>
+        </label>
+        <label class="field admin-only"><span>每平台搜索数量</span><input type="number" id="lx-search-limit" min="5" max="100"></label>
+        <label class="field admin-only"><span>歌曲匹配阈值（0.5–1）</span><input type="number" id="lx-match-threshold" min="0.5" max="1" step="0.01"></label>
+      </div>
+      <p class="hint" id="lx-path-hint">下载根目录由 Docker 挂载决定；网页只能选择根目录下的相对子目录。</p>
+      <div class="row"><button class="btn primary" onclick="App.saveLxSettings()">保存 LX 下载设置</button></div>
     </div>
 
-    <div class="card">
-      <h2>代写平台 Cookie</h2>
-      <p class="hint">
-        需要先登录引擎。格式为 JSON，键是平台名（netease / qq / kugou …），值是 Cookie 字符串。
-        写好后会立刻影响之后所有下载的音质。也可以直接去引擎自己的设置页粘贴。
-      </p>
-      <textarea id="cookie-json" placeholder='{"netease":"MUSIC_U=...","qq":"uin=...; qm_keyst=..."}'></textarea>
-      <div class="toolbar"><button class="btn" onclick="App.pushCookies()">写入引擎</button></div>
+    <div class="card admin-only">
+      <div class="row"><div><h2>LX 音源管理</h2><p class="hint">音源脚本会保存在 config/lx-sources。导入前请确认来源可信。</p></div>
+        <div class="spacer"></div><button class="btn small" onclick="App.reloadLxSources()">重新加载目录</button></div>
+      <div id="lx-source-list" class="grid cols-2"></div>
+      <div class="grid cols-2" style="margin-top:14px">
+        <label class="field"><span>显示名称（可选）</span><input type="text" id="lx-source-name" placeholder="例如 IKUN 音源"></label>
+        <label class="field"><span>从 URL 导入</span><input type="text" id="lx-source-url" placeholder="https://example.com/source.js"></label>
+      </div>
+      <div class="row">
+        <button class="btn" onclick="App.importLxSourceUrl()">从 URL 导入</button>
+        <input type="file" id="lx-source-file" accept=".js,.mjs,.cjs,text/javascript" style="max-width:300px">
+        <button class="btn" onclick="App.importLxSourceFile()">导入本地脚本</button>
+      </div>
+      <label class="field" style="margin-top:12px"><span>或粘贴脚本文本</span><textarea id="lx-source-script" placeholder="粘贴 LX Music 自定义音源脚本"></textarea></label>
+      <button class="btn" onclick="App.importLxSourceText()">导入脚本文本</button>
+      <div id="lx-source-result" class="small muted" style="margin-top:10px"></div>
     </div>
 
-    <div class="card">
-      <h2>引擎当前设置</h2>
-      <p class="hint">重点确认「本地下载目录」是 data/downloads，这样下载产物会落在宿主机 ./data/downloads。</p>
-      <div class="table-wrap"><table><thead><tr><th>配置项</th><th>值</th></tr></thead><tbody id="engine-settings-body"></tbody></table></div>
-    </div>
 
     <div class="card">
       <h2>默认参数</h2>
@@ -214,16 +324,18 @@
       <div class="row"><button class="btn primary" onclick="App.saveSettings()">保存默认参数</button></div>
     </div>
 
-    <div class="card">
-      <h2>没有达标的源怎么办</h2>
-      <p class="hint">当目标音质在允许的平台里都拿不到时，每个监控可以选两种策略：</p>
-      <div class="grid cols-2">
-        <div><b>best_effort（推荐）</b><p class="muted small">取所有候选里码率最高的那个，音质降级但歌不会丢。界面上会标出实际拿到的音质。</p></div>
-        <div><b>skip</b><p class="muted small">严格模式：拿不到目标音质就不下载，记录为「未达音质」，后续可以升级 Cookie 后重试。</p></div>
-      </div>
-    </div>
   </section>
 </main>
+
+<div class="modal-backdrop" id="platform-login-modal">
+  <div class="modal" style="max-width:430px;text-align:center">
+    <h2 id="platform-login-title">平台扫码登录</h2>
+    <div id="platform-login-loading" class="muted">正在生成二维码…</div>
+    <img id="platform-login-image" alt="扫码二维码" style="display:none;width:min(300px,80vw);height:min(300px,80vw);margin:12px auto;border-radius:12px;background:white;padding:8px">
+    <div id="platform-login-status" class="notice info">请稍候</div>
+    <div class="modal-actions"><button class="btn" onclick="App.closePlatformLogin()">关闭</button></div>
+  </div>
+</div>
 
 <!-- ============================ 监控编辑弹窗 ============================ -->
 <div class="modal-backdrop" id="monitor-modal">
@@ -266,8 +378,9 @@
     <div id="m-block-artist" style="display:none">
       <label class="field"><span>关注的歌手（每行一个，可写「歌手名|平台」，如「周杰伦」或「陈奕迅|qq」）</span>
         <textarea id="m-artist-names" placeholder="周杰伦&#10;林俊杰&#10;陈奕迅|qq"></textarea></label>
+      <label class="field"><span>每位歌手最多发现歌曲数</span><input type="number" id="m-artist-page-size" min="30" max="1000" value="100"></label>
       <p class="hint">
-        歌手关注靠「按歌手名搜索 + 严格匹配歌手」实现（引擎按歌单/榜单取曲目，没有单独的歌手接口）。
+        LX 模式会自动翻页搜索，再严格匹配歌手；默认最多累计 100 首，不代表歌手总曲目只有 100 首。
         搜索结果里混进来的翻唱、同名翻唱会被本地按歌手名过滤掉。新歌发布后会在下一轮检查时被自动发现并下载。
       </p>
     </div>
@@ -313,6 +426,6 @@
 
 <div id="toast" class="pill" style="display:none;position:fixed;bottom:22px;right:22px;z-index:99;padding:10px 16px;background:var(--panel);border-color:var(--accent);color:var(--text)"></div>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=20260921-platform-v3"></script>
 </body>
 </html>

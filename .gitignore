@@ -8,10 +8,16 @@
 config/*
 !config/engine/
 !config/monitor/
+!config/lx/
+!config/lx-sources/
 config/engine/*
 config/monitor/*
+config/lx/*
+config/lx-sources/*
 !config/engine/.gitkeep
 !config/monitor/.gitkeep
+!config/lx/.gitkeep
+!config/lx-sources/.gitkeep
 
 data/*
 !data/downloads/
@@ -24,6 +30,7 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+node_modules/
 
 # ── 构建 / 发布中间产物 ───────────────────────────────────────────────────
 *.tar

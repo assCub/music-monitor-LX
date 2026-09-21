@@ -5,24 +5,52 @@ import json
 import sqlite3
 import threading
 import time
+import uuid
 from typing import Any
 
 from .config import settings
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id            TEXT PRIMARY KEY,
+    username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    display_name  TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL,
+    role          TEXT NOT NULL DEFAULT 'user',
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS user_settings (
+    user_id TEXT NOT NULL,
+    key     TEXT NOT NULL,
+    value   TEXT NOT NULL,
+    PRIMARY KEY(user_id, key)
+);
+
 CREATE TABLE IF NOT EXISTS monitors (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id           TEXT,
     name              TEXT    NOT NULL,
     kind              TEXT    NOT NULL,              -- chart | playlist | favorites
     enabled           INTEGER NOT NULL DEFAULT 1,
     sources           TEXT    NOT NULL DEFAULT '[]', -- JSON: 参与的平台列表
     target            TEXT    NOT NULL DEFAULT '{}', -- JSON: 榜单/链接/收藏夹/歌手的具体目标
-    quality           TEXT    NOT NULL DEFAULT 'lossless',
+    quality           TEXT    NOT NULL DEFAULT 'master',
     fallback          TEXT    NOT NULL DEFAULT 'best_effort', -- best_effort | skip
     auto_download     INTEGER NOT NULL DEFAULT 1,
     embed             INTEGER NOT NULL DEFAULT 1,
@@ -83,6 +111,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_monitor ON runs(monitor_id, id DESC);
 # 增量迁移：老库补列，避免升级后启动即报错。SQLite 不支持 ADD COLUMN IF NOT EXISTS。
 _MIGRATIONS: list[tuple[str, str, str]] = [
     ("runs", "engine_skipped", "ALTER TABLE runs ADD COLUMN engine_skipped INTEGER NOT NULL DEFAULT 0"),
+    ("monitors", "user_id", "ALTER TABLE monitors ADD COLUMN user_id TEXT"),
 ]
 
 
@@ -146,22 +175,123 @@ class Database:
     def all_settings(self) -> dict[str, Any]:
         return {r["key"]: self.get_setting(r["key"]) for r in self.query("SELECT key FROM settings")}
 
+    def get_user_setting(self, user_id: str, key: str, default: Any = None) -> Any:
+        row = self.one("SELECT value FROM user_settings WHERE user_id = ? AND key = ?", (user_id, key))
+        if row is None:
+            return default
+        try:
+            return json.loads(row["value"])
+        except (TypeError, ValueError):
+            return row["value"]
+
+    def set_user_setting(self, user_id: str, key: str, value: Any) -> None:
+        self.execute(
+            "INSERT INTO user_settings(user_id,key,value) VALUES(?,?,?) "
+            "ON CONFLICT(user_id,key) DO UPDATE SET value=excluded.value",
+            (user_id, key, json.dumps(value, ensure_ascii=False)),
+        )
+
+    def all_user_settings(self, user_id: str) -> dict[str, Any]:
+        rows = self.query("SELECT key FROM user_settings WHERE user_id = ?", (user_id,))
+        return {r["key"]: self.get_user_setting(user_id, r["key"]) for r in rows}
+
+    # ---------------- users / sessions ----------------
+    def user_count(self) -> int:
+        row = self.one("SELECT COUNT(*) AS c FROM users")
+        return int(row["c"] if row else 0)
+
+    def create_user(self, username: str, password_hash: str, *, display_name: str = "", role: str = "user") -> dict[str, Any]:
+        user_id = str(uuid.uuid4())
+        ts = now_iso()
+        self.execute(
+            "INSERT INTO users(id,username,display_name,password_hash,role,enabled,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?)",
+            (user_id, username.strip(), display_name.strip(), password_hash, role, ts, ts),
+        )
+        return self.get_user(user_id, include_secret=False) or {}
+
+    def get_user(self, user_id: str, *, include_secret: bool = False) -> dict[str, Any] | None:
+        fields = "*" if include_secret else "id,username,display_name,role,enabled,created_at,updated_at"
+        row = self.one(f"SELECT {fields} FROM users WHERE id = ?", (user_id,))
+        if row is None:
+            return None
+        data = dict(row)
+        data["enabled"] = bool(data.get("enabled"))
+        return data
+
+    def get_user_by_username(self, username: str, *, include_secret: bool = False) -> dict[str, Any] | None:
+        fields = "*" if include_secret else "id,username,display_name,role,enabled,created_at,updated_at"
+        row = self.one(f"SELECT {fields} FROM users WHERE username = ? COLLATE NOCASE", (username.strip(),))
+        if row is None:
+            return None
+        data = dict(row)
+        data["enabled"] = bool(data.get("enabled"))
+        return data
+
+    def list_users(self) -> list[dict[str, Any]]:
+        return [dict(r) | {"enabled": bool(r["enabled"])} for r in self.query(
+            "SELECT id,username,display_name,role,enabled,created_at,updated_at FROM users ORDER BY created_at"
+        )]
+
+    def update_user(self, user_id: str, **changes: Any) -> None:
+        allowed = {"display_name", "role", "enabled", "password_hash"}
+        fields, params = [], []
+        for key, value in changes.items():
+            if key in allowed:
+                fields.append(f"{key} = ?")
+                params.append(int(value) if key == "enabled" else value)
+        if not fields:
+            return
+        fields.append("updated_at = ?")
+        params.extend([now_iso(), user_id])
+        self.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", tuple(params))
+
+    def assign_orphan_data(self, user_id: str) -> None:
+        self.execute("UPDATE monitors SET user_id = ? WHERE user_id IS NULL OR user_id = ''", (user_id,))
+
+    def create_session(self, token_hash: str, user_id: str, expires_at: int) -> None:
+        now = int(time.time())
+        self.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
+        self.execute(
+            "INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES(?,?,?,?)",
+            (token_hash, user_id, expires_at, now),
+        )
+
+    def session_user(self, token_hash: str) -> dict[str, Any] | None:
+        now = int(time.time())
+        row = self.one(
+            "SELECT u.id,u.username,u.display_name,u.role,u.enabled,u.created_at,u.updated_at "
+            "FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND u.enabled=1",
+            (token_hash, now),
+        )
+        if row is None:
+            return None
+        data = dict(row)
+        data["enabled"] = True
+        return data
+
+    def delete_session(self, token_hash: str) -> None:
+        self.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+
+    def delete_user_sessions(self, user_id: str) -> None:
+        self.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+
     # ---------------- monitors ----------------
-    def create_monitor(self, data: dict[str, Any]) -> int:
+    def create_monitor(self, data: dict[str, Any], user_id: str | None = None) -> int:
         ts = now_iso()
         cur = self.execute(
             """INSERT INTO monitors
-               (name, kind, enabled, sources, target, quality, fallback, auto_download, embed,
+               (user_id, name, kind, enabled, sources, target, quality, fallback, auto_download, embed,
                 interval_minutes, max_downloads, include_kw, exclude_kw,
                 last_run_at, next_run_at, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?)""",
             (
+                user_id,
                 data["name"],
                 data["kind"],
                 int(data.get("enabled", 1)),
                 json.dumps(data.get("sources", []), ensure_ascii=False),
                 json.dumps(data.get("target", {}), ensure_ascii=False),
-                data.get("quality", "lossless"),
+                data.get("quality", "master"),
                 data.get("fallback", "best_effort"),
                 int(data.get("auto_download", 1)),
                 int(data.get("embed", 1)),
@@ -178,7 +308,7 @@ class Database:
         self.set_next_run(mid, immediately=True)
         return mid
 
-    def update_monitor(self, mid: int, data: dict[str, Any]) -> None:
+    def update_monitor(self, mid: int, data: dict[str, Any], user_id: str | None = None) -> None:
         fields, params = [], []
         for key in (
             "name", "kind", "quality", "fallback", "include_kw", "exclude_kw",
@@ -199,24 +329,38 @@ class Database:
         fields.append("updated_at = ?")
         params.append(now_iso())
         params.append(mid)
-        self.execute(f"UPDATE monitors SET {', '.join(fields)} WHERE id = ?", tuple(params))
+        sql = f"UPDATE monitors SET {', '.join(fields)} WHERE id = ?"
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params.append(user_id)
+        self.execute(sql, tuple(params))
 
-    def delete_monitor(self, mid: int) -> None:
+    def delete_monitor(self, mid: int, user_id: str | None = None) -> None:
+        if user_id is not None and self.get_monitor(mid, user_id) is None:
+            return
         self.execute("DELETE FROM tracks WHERE monitor_id = ?", (mid,))
         self.execute("DELETE FROM runs WHERE monitor_id = ?", (mid,))
         self.execute("DELETE FROM monitors WHERE id = ?", (mid,))
 
-    def get_monitor(self, mid: int) -> dict[str, Any] | None:
-        row = self.one("SELECT * FROM monitors WHERE id = ?", (mid,))
+    def get_monitor(self, mid: int, user_id: str | None = None) -> dict[str, Any] | None:
+        sql, params = "SELECT * FROM monitors WHERE id = ?", [mid]
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params.append(user_id)
+        row = self.one(sql, tuple(params))
         return self._row_to_monitor(row) if row else None
 
-    def list_monitors(self) -> list[dict[str, Any]]:
-        rows = self.query("SELECT * FROM monitors ORDER BY id DESC")
+    def list_monitors(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        if user_id is None:
+            rows = self.query("SELECT * FROM monitors ORDER BY id DESC")
+        else:
+            rows = self.query("SELECT * FROM monitors WHERE user_id = ? ORDER BY id DESC", (user_id,))
         return [self._row_to_monitor(r) for r in rows]
 
     def due_monitors(self, limit: int = 5) -> list[dict[str, Any]]:
         rows = self.query(
-            "SELECT * FROM monitors WHERE enabled = 1 AND (next_run_at IS NULL OR next_run_at <= ?) "
+            "SELECT * FROM monitors WHERE user_id IS NOT NULL AND user_id <> '' AND enabled = 1 "
+            "AND (next_run_at IS NULL OR next_run_at <= ?) "
             "ORDER BY COALESCE(next_run_at, '') ASC LIMIT ?",
             (now_iso(), limit),
         )
@@ -277,9 +421,14 @@ class Database:
             ),
         )
 
-    def recent_runs(self, monitor_id: int | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    def recent_runs(self, monitor_id: int | None = None, limit: int = 50, user_id: str | None = None) -> list[dict[str, Any]]:
         if monitor_id:
             rows = self.query("SELECT * FROM runs WHERE monitor_id = ? ORDER BY id DESC LIMIT ?", (monitor_id, limit))
+        elif user_id is not None:
+            rows = self.query(
+                "SELECT r.* FROM runs r JOIN monitors m ON m.id=r.monitor_id WHERE m.user_id=? ORDER BY r.id DESC LIMIT ?",
+                (user_id, limit),
+            )
         else:
             rows = self.query("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,))
         return [dict(r) for r in rows]
@@ -362,21 +511,31 @@ class Database:
         status: str | None = None,
         limit: int = 200,
         offset: int = 0,
+        user_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        sql = "SELECT * FROM tracks WHERE 1=1"
+        sql = "SELECT t.* FROM tracks t JOIN monitors m ON m.id=t.monitor_id WHERE 1=1"
         params: list[Any] = []
         if monitor_id:
-            sql += " AND monitor_id = ?"
+            sql += " AND t.monitor_id = ?"
             params.append(monitor_id)
         if status:
-            sql += " AND status = ?"
+            sql += " AND t.status = ?"
             params.append(status)
-        sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+        if user_id is not None:
+            sql += " AND m.user_id = ?"
+            params.append(user_id)
+        sql += " ORDER BY t.id DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         return [dict(r) for r in self.query(sql, tuple(params))]
 
-    def track_stats(self) -> dict[str, int]:
-        rows = self.query("SELECT status, COUNT(*) AS c FROM tracks GROUP BY status")
+    def track_stats(self, user_id: str | None = None) -> dict[str, int]:
+        if user_id is None:
+            rows = self.query("SELECT status, COUNT(*) AS c FROM tracks GROUP BY status")
+        else:
+            rows = self.query(
+                "SELECT t.status,COUNT(*) AS c FROM tracks t JOIN monitors m ON m.id=t.monitor_id WHERE m.user_id=? GROUP BY t.status",
+                (user_id,),
+            )
         stats = {r["status"]: r["c"] for r in rows}
         stats["total"] = sum(stats.values())
         return stats

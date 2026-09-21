@@ -1,7 +1,6 @@
 """各平台热门榜单注册表。
 
 现实情况（重要）：
-  * 上游 go-music-dl / music-lib **没有**「获取平台排行榜」的接口，只有「按歌单 ID / 歌单链接取曲目」。
   * 网易云的榜单本身就是官方歌单，所以直接当歌单取（`id`）。
   * 其它平台的榜单**不是**歌单页，上游的 ParsePlaylist 认不出来 —— 这也是此前
     「按链接未解析出曲目」的根因。这类榜单改用本服务自己的榜单接口取（`rank`，见 ranks.py）。
@@ -20,7 +19,6 @@ from typing import Any
 
 from . import ranks
 from .config import settings
-from .engine import Engine
 
 log = logging.getLogger("monitor.charts")
 
@@ -119,7 +117,7 @@ def chart_index() -> dict[str, dict[str, Any]]:
     return out
 
 
-async def resolve_chart(engine: Engine, entry: dict[str, Any]) -> dict[str, Any]:
+async def resolve_chart(discovery: Any, entry: dict[str, Any]) -> dict[str, Any]:
     """解析一个榜单条目 → 曲目列表。
 
     entry 支持三种形态：
@@ -153,7 +151,7 @@ async def resolve_chart(engine: Engine, entry: dict[str, Any]) -> dict[str, Any]
     # 2) 有 ID：直接当歌单取
     if chart_id and platform:
         try:
-            songs = await engine.playlist_songs(chart_id, platform)
+            songs = await discovery.playlist_songs(chart_id, platform)
             if songs:
                 return {"ok": True, "songs": songs, "resolved": {"id": chart_id, "source": platform}, "message": ""}
             errors.append("按歌单 ID 取曲目为空")
@@ -163,9 +161,9 @@ async def resolve_chart(engine: Engine, entry: dict[str, Any]) -> dict[str, Any]
     # 3) 有链接：交给引擎做歌单链接识别 + 解析（注意：只支持歌单链接，不支持榜单页链接）
     if link:
         try:
-            playlists = await engine.search_playlists(link, [platform] if platform else None)
+            playlists = await discovery.search_playlists(link, [platform] if platform else None)
             for pl in playlists:
-                songs = await engine.playlist_songs(pl["id"], pl["source"], link=pl.get("link") or "")
+                songs = await discovery.playlist_songs(pl["id"], pl["source"], link=pl.get("link") or "")
                 if songs:
                     return {
                         "ok": True,

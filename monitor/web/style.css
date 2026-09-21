@@ -25,6 +25,11 @@ body {
   font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   min-height: 100vh;
 }
+.auth-screen { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; padding: 20px; background: var(--bg); }
+.auth-screen.hidden { display: none; }
+.auth-card { width: min(420px, 100%); padding: 26px; border: 1px solid var(--border); border-radius: 18px; background: var(--panel); box-shadow: 0 30px 80px rgba(0,0,0,.55); }
+.auth-card h2 { margin: 24px 0 4px; }
+.auth-card .hint { color: var(--muted); font-size: 13px; }
 
 a { color: var(--accent-2); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -109,6 +114,8 @@ th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--bor
 th { color: var(--muted); font-weight: 600; font-size: 12px; position: sticky; top: 0; background: var(--panel); }
 tbody tr:hover { background: rgba(255, 255, 255, .025); }
 .table-wrap { max-height: 460px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; }
+.progress { height: 6px; border-radius: 999px; overflow: hidden; background: #0a1020; border: 1px solid var(--border); }
+.progress span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .25s ease; }
 
 .status { font-size: 11.5px; padding: 2px 8px; border-radius: 999px; display: inline-block; white-space: nowrap; }
 .status.downloaded { color: #6ee7b7; background: rgba(16, 185, 129, .14); }
@@ -159,3 +166,185 @@ pre.log {
 .empty { padding: 26px; text-align: center; color: var(--muted); font-size: 13px; }
 .spin { animation: spin 1s linear infinite; display: inline-block; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* 平台账号中心 */
+.platform-account-card {
+  position: relative; overflow: hidden; padding: 0;
+  background:
+    radial-gradient(520px 240px at 2% 0, rgba(239, 68, 68, .08), transparent 70%),
+    radial-gradient(520px 240px at 98% 0, rgba(59, 130, 246, .09), transparent 70%),
+    var(--panel);
+}
+.platform-account-card::before {
+  content: ""; position: absolute; inset: 0 0 auto; height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.3), transparent);
+}
+.platform-account-heading { display: flex; align-items: flex-start; gap: 18px; padding: 20px 20px 16px; }
+.platform-account-heading h2 { margin: 1px 0 4px; font-size: 18px; }
+.platform-account-heading .hint { margin: 0; }
+.platform-account-heading .account-refresh { margin-left: auto; white-space: nowrap; }
+.eyebrow { color: var(--accent-2); font-size: 10px; font-weight: 800; letter-spacing: .16em; }
+
+.platform-switcher {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  padding: 0 20px 14px; border-bottom: 1px solid rgba(141, 159, 190, .13);
+}
+.platform-tab {
+  appearance: none; display: flex; align-items: center; gap: 11px; min-width: 0;
+  padding: 11px 13px; border: 1px solid var(--border); border-radius: 12px;
+  background: rgba(8, 15, 29, .48); color: var(--text); cursor: pointer; text-align: left;
+  transition: border-color .18s ease, background .18s ease, transform .18s ease;
+}
+.platform-tabs-loading { width: 100%; padding: 12px; color: var(--muted); text-align: center; }
+.platform-tab { flex: 1 1 170px; }
+.platform-tab-other { flex-basis: 150px; border-style: dashed; }
+.platform-tab:hover { transform: translateY(-1px); border-color: #395075; }
+.platform-tab.active { border-color: rgba(52, 211, 153, .62); background: rgba(16, 185, 129, .08); box-shadow: inset 0 0 0 1px rgba(16, 185, 129, .06); }
+.platform-tab[data-platform="netease"].active { border-color: rgba(248, 113, 113, .62); background: rgba(239, 68, 68, .07); box-shadow: inset 0 0 0 1px rgba(239, 68, 68, .05); }
+.platform-logo {
+  display: grid; place-items: center; flex: 0 0 34px; width: 34px; height: 34px;
+  border-radius: 10px; color: white; font-size: 15px; font-weight: 900; box-shadow: 0 8px 18px rgba(0,0,0,.2);
+}
+.platform-logo.netease { background: linear-gradient(145deg, #f05252, #c81e1e); }
+.platform-logo.qq { background: linear-gradient(145deg, #38bdf8, #2563eb); }
+.platform-logo.kugou { background: linear-gradient(145deg, #f59e0b, #ea580c); }
+.platform-logo.bilibili { background: linear-gradient(145deg, #60a5fa, #2563eb); }
+.platform-logo.soda { background: linear-gradient(145deg, #a78bfa, #7c3aed); }
+.platform-logo.kuwo { background: linear-gradient(145deg, #22c55e, #15803d); }
+.platform-logo.migu { background: linear-gradient(145deg, #fb7185, #e11d48); }
+.platform-logo.other { background: #263754; color: #b7c6df; }
+.platform-tab > span:last-child { display: flex; flex-direction: column; min-width: 0; line-height: 1.35; }
+.platform-tab b { font-size: 13px; }
+.platform-tab small { color: var(--muted); font-size: 11px; }
+.platform-tab small.online { color: #6ee7b7; }
+.platform-tab small.expired { color: #fbbf24; }
+
+.platform-account-panel { display: grid; grid-template-columns: minmax(240px, .72fr) minmax(380px, 1.28fr); gap: 16px; padding: 18px 20px 20px; }
+.platform-account-panel.is-authenticated { display: block; }
+.platform-account-panel.is-other { display: block; }
+.platform-profile, .platform-login-box {
+  min-width: 0; padding: 20px; border: 1px solid rgba(141, 159, 190, .16); border-radius: 16px;
+  background: rgba(8, 15, 29, .55);
+}
+.platform-login-box.hidden { display: none; }
+.platform-profile { display: flex; flex-direction: column; min-height: 270px; overflow: hidden; }
+.platform-profile-loading { margin: auto; color: var(--muted); }
+.platform-profile-empty { display: grid; gap: 5px; margin: auto; text-align: center; color: var(--muted); }
+.platform-profile-empty b { color: var(--text); }
+
+.platform-profile.authenticated { position: relative; min-height: 390px; padding: 0; }
+.platform-profile.authenticated::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .9;
+  background: radial-gradient(500px 180px at 50% 0, rgba(255,255,255,.07), transparent 70%);
+}
+.platform-profile.authenticated.netease { background: linear-gradient(180deg, #351a18 0, #1c1318 58%, rgba(8,15,29,.9) 100%); }
+.platform-profile.authenticated.qq { background: linear-gradient(180deg, #102b49 0, #111d32 58%, rgba(8,15,29,.9) 100%); }
+.platform-profile.authenticated.kugou { background: linear-gradient(180deg, #3b2510 0, #201a14 58%, rgba(8,15,29,.9) 100%); }
+.platform-profile.authenticated.bilibili { background: linear-gradient(180deg, #17304c 0, #141f30 58%, rgba(8,15,29,.9) 100%); }
+.platform-profile.authenticated.soda { background: linear-gradient(180deg, #2c1d45 0, #1c172b 58%, rgba(8,15,29,.9) 100%); }
+.platform-profile.authenticated.kuwo { background: linear-gradient(180deg, #153524 0, #14221b 58%, rgba(8,15,29,.9) 100%); }
+.platform-profile.authenticated.migu { background: linear-gradient(180deg, #421c2b 0, #281721 58%, rgba(8,15,29,.9) 100%); }
+.platform-profile-hero {
+  position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center;
+  padding: 32px 20px 24px; text-align: center;
+}
+.platform-avatar-ring {
+  display: grid; place-items: center; width: 106px; height: 106px; border: 1px solid rgba(255,255,255,.45);
+  border-radius: 50%; background: rgba(255,255,255,.08); box-shadow: 0 16px 35px rgba(0,0,0,.35);
+}
+.platform-avatar {
+  display: block; width: 96px !important; height: 96px !important; min-width: 96px; max-width: 96px;
+  min-height: 96px; max-height: 96px; flex: 0 0 96px; aspect-ratio: 1; object-fit: cover; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,.9); background: var(--panel-2);
+}
+.platform-avatar-fallback { display: grid; place-items: center; color: white; font-size: 30px; font-weight: 900; }
+.platform-avatar-fallback.netease { background: linear-gradient(145deg, #f05252, #b91c1c); }
+.platform-avatar-fallback.qq { background: linear-gradient(145deg, #38bdf8, #1d4ed8); }
+.platform-identity { display: flex; flex-direction: column; align-items: center; min-width: 0; padding-top: 15px; }
+.platform-name-line { display: flex; align-items: center; justify-content: center; gap: 9px; max-width: 100%; }
+.platform-name-line h3 { overflow: hidden; margin: 0; font-size: 25px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.profile-vip {
+  padding: 2px 8px; border: 1px solid rgba(253, 186, 116, .26); border-radius: 999px;
+  color: #fed7aa; background: rgba(124, 45, 18, .42); font-size: 10px; font-weight: 800; letter-spacing: .08em;
+}
+.profile-id { margin: 5px 0 10px; color: rgba(226,232,240,.66); font-size: 11px; }
+.account-state { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; }
+.account-state i { width: 6px; height: 6px; border-radius: 99px; background: currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent); }
+.account-state.online { color: #34d399; }
+.account-state.expired { color: #fbbf24; }
+.account-state.offline { color: #94a3b8; }
+.platform-profile-stats {
+  position: relative; z-index: 1; display: grid; grid-template-columns: repeat(3, 1fr); width: min(680px, calc(100% - 40px));
+  margin: 0 auto; border-top: 1px solid rgba(255,255,255,.1); border-bottom: 1px solid rgba(255,255,255,.1);
+}
+.platform-profile-stats > div { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 16px 12px; }
+.platform-profile-stats > div + div { border-left: 1px solid rgba(255,255,255,.09); }
+.platform-profile-stats span { color: rgba(203,213,225,.65); font-size: 11px; }
+.platform-profile-stats strong { font-size: 13px; font-weight: 650; }
+.platform-profile-actions { position: relative; z-index: 1; display: flex; justify-content: center; padding: 20px; }
+.platform-logout { min-width: 128px; }
+
+.platform-profile.signed-out { align-items: center; justify-content: center; gap: 8px; text-align: center; }
+.platform-profile.signed-out h3 { margin: 4px 0 0; font-size: 18px; }
+.platform-profile.signed-out p { max-width: 250px; margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+.signed-out-actions { justify-content: center; }
+.signed-out-mark { display: grid; place-items: center; width: 58px; height: 58px; margin-bottom: 4px; border-radius: 18px; color: white; font-size: 22px; font-weight: 900; }
+.signed-out-mark.netease { background: linear-gradient(145deg, #f05252, #b91c1c); box-shadow: 0 12px 28px rgba(185,28,28,.24); }
+.signed-out-mark.qq { background: linear-gradient(145deg, #38bdf8, #1d4ed8); box-shadow: 0 12px 28px rgba(29,78,216,.24); }
+.signed-out-mark.kugou { background: linear-gradient(145deg, #f59e0b, #ea580c); }
+.signed-out-mark.bilibili { background: linear-gradient(145deg, #60a5fa, #2563eb); }
+.signed-out-mark.soda { background: linear-gradient(145deg, #a78bfa, #7c3aed); }
+.signed-out-mark.kuwo { background: linear-gradient(145deg, #22c55e, #15803d); }
+.signed-out-mark.migu { background: linear-gradient(145deg, #fb7185, #e11d48); }
+
+.platform-login-box { min-height: 270px; }
+.account-method-tabs { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; width: 100%; padding: 4px; border: 1px solid var(--border); border-radius: 11px; background: #0a1221; }
+.account-method-tab {
+  appearance: none; padding: 8px 12px; border: 0; border-radius: 8px; background: transparent;
+  color: var(--muted); cursor: pointer; font: inherit; font-size: 12px; font-weight: 700; text-align: center;
+}
+.account-method-tab.active { background: #1b2944; color: var(--text); box-shadow: 0 2px 9px rgba(0,0,0,.22); }
+.account-method-panel { padding-top: 15px; }
+.account-method-panel.hidden { display: none; }
+.method-title { margin-bottom: 3px; font-size: 13px; font-weight: 700; }
+.account-method-panel .hint { min-height: 38px; margin-bottom: 11px; }
+.account-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 8px 15px !important; border-radius: 10px !important; }
+.account-btn.secondary { background: #17243d; border-color: #2b3b5b; }
+.account-btn.danger { color: #fda4af; background: rgba(127,29,29,.12); border-color: rgba(248,113,113,.42); }
+.account-btn.danger:hover { color: #fecdd3; background: rgba(127,29,29,.22); border-color: rgba(248,113,113,.64); }
+.qr-login-btn { min-width: 135px; }
+.cookie-input { min-height: 82px; margin-bottom: 10px; line-height: 1.5; }
+.account-result { min-height: 19px; margin-top: 11px; }
+.credential-note { padding: 11px 20px; border-top: 1px solid rgba(141, 159, 190, .13); color: var(--muted); background: rgba(6,12,23,.32); font-size: 11px; }
+
+.platform-other-box { min-height: 270px; padding: 20px; border: 1px solid rgba(141, 159, 190, .16); border-radius: 16px; background: rgba(8, 15, 29, .55); }
+.platform-other-box.hidden { display: none; }
+.other-platform-heading { display: flex; align-items: center; gap: 12px; }
+.other-platform-heading h3 { margin: 0; font-size: 16px; }
+.other-platform-heading p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+.other-platform-supported { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 12px; }
+.other-platform-chip { display: inline-flex; align-items: center; gap: 7px; padding: 6px 9px; border: 1px solid var(--border); border-radius: 9px; color: var(--muted); font-size: 12px; }
+.other-platform-chip.configured { border-color: rgba(52,211,153,.36); color: var(--text); }
+.other-platform-chip .platform-logo { width: 20px; height: 20px; flex: 0 0 20px; border-radius: 6px; font-size: 10px; }
+.other-platform-chip b { color: #6ee7b7; font-size: 10px; font-weight: 600; }
+.other-json-field { margin: 0; }
+
+@media (max-width: 720px) {
+  main { padding-left: 12px; padding-right: 12px; }
+  .platform-account-panel { grid-template-columns: 1fr; padding: 14px; }
+  .platform-switcher { padding-left: 14px; padding-right: 14px; }
+  .platform-account-heading { padding: 17px 14px 14px; }
+  .platform-account-heading .account-refresh { align-self: center; }
+  .platform-profile { min-height: 250px; }
+  .platform-profile.authenticated { min-height: 390px; }
+}
+
+@media (max-width: 440px) {
+  .platform-account-heading { flex-direction: column; gap: 10px; }
+  .platform-account-heading .account-refresh { align-self: flex-start; }
+  .platform-tab { flex-basis: 100%; }
+  .platform-profile-stats { width: calc(100% - 24px); }
+  .platform-profile-stats > div { padding: 13px 6px; }
+  .platform-profile-stats strong { font-size: 11px; }
+  .platform-name-line h3 { font-size: 21px; }
+}

@@ -14,9 +14,9 @@ ARG PIP_INDEX=
 # __version__ 保持一致；改版本请用 scripts/version.sh bump，勿手改此处。
 ARG APP_VERSION=1.2.2
 LABEL org.opencontainers.image.title="music-monitor" \
-      org.opencontainers.image.description="go-music-dl 之上的榜单/歌单/收藏夹监控自动下载服务" \
+      org.opencontainers.image.description="多用户榜单/歌单/歌手订阅与 LX 自动下载服务" \
       org.opencontainers.image.version="${APP_VERSION}" \
-      org.opencontainers.image.source="https://github.com/guohuiyuan/go-music-dl" \
+      org.opencontainers.image.source="https://github.com/assCub/music-monitor-LX" \
       org.opencontainers.image.licenses="MIT"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -59,6 +59,6 @@ RUN mkdir -p /app/data && chmod 777 /app/data
 EXPOSE 9090
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:9090/api/health || exit 1
+    CMD curl -fsS http://127.0.0.1:9090/api/healthz || exit 1
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9090"]

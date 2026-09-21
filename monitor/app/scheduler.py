@@ -12,7 +12,7 @@ import time
 from . import pipeline
 from .config import settings
 from .db import Database
-from .engine import Engine
+from .lx_gateway import LxGateway
 
 log = logging.getLogger("monitor.scheduler")
 
@@ -20,9 +20,11 @@ MAX_PARALLEL_MONITORS = 3
 
 
 class Scheduler:
-    def __init__(self, db: Database, engine: Engine) -> None:
+    def __init__(self, db: Database, lx_gateway: LxGateway, discovery=None, credential_store=None) -> None:
         self.db = db
-        self.engine = engine
+        self.lx_gateway = lx_gateway
+        self.discovery = discovery
+        self.credential_store = credential_store
         self._loop_task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
         self._running: dict[int, asyncio.Task] = {}
@@ -99,7 +101,12 @@ class Scheduler:
             self.db.set_next_run(monitor_id, interval_minutes=int(mon.get("interval_minutes") or 360))
             log.info("开始执行监控 #%s %s", monitor_id, mon.get("name"))
             try:
-                result = await pipeline.run_monitor(self.db, self.engine, mon)
+                credentials = self.credential_store.load(str(mon.get("user_id") or "")) if self.credential_store and mon.get("user_id") else {}
+                if self.discovery is not None:
+                    async with self.discovery.credentials(credentials):
+                        result = await pipeline.run_monitor(
+                            self.db, self.discovery, mon, lx_gateway=self.lx_gateway
+                        )
                 log.info("监控 #%s 完成: %s", monitor_id, result)
             except Exception:  # noqa: BLE001
                 log.exception("监控 #%s 执行失败", monitor_id)

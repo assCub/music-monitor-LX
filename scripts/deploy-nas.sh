@@ -77,7 +77,7 @@ if [ -n "$ARG_IMAGE" ]; then
   info "MONITOR_IMAGE = $IMAGE   （已在 .env 固定，不再跟随 APP_VERSION）"
 else
   if grep -q '^MONITOR_IMAGE=' .env; then
-    sed -i.bak '/^MONITOR_IMAGE=/d' .env && rm -f .env.bak
+    sed -i.bak '/^MONITOR_IMAGE=/d' .env && unlink .env.bak
     info "已移除 .env 里固定的 MONITOR_IMAGE"
   fi
   IMAGE="${DEFAULT_REPO}:v${APP_VERSION}"
@@ -87,17 +87,15 @@ fi
 
 # ── 3. 数据目录与权限 ──────────────────────────────────────────────────────
 # 从 .env 读取宿主机路径，缺省回落到 compose 里的默认值。
-ENGINE_CONFIG_DIR="$(envval ENGINE_CONFIG_DIR ./config/engine)"
-MONITOR_CONFIG_DIR="$(envval MONITOR_CONFIG_DIR ./config/monitor)"
-DOWNLOADS_DIR="$(envval DOWNLOADS_DIR ./data/downloads)"
+CONFIG_DIR="$(envval CONFIG_DIR ./config)"
+MUSIC_DIR="$(envval MUSIC_DIR ./data/downloads)"
 
-# 两个容器都以 uid=1000 运行，宿主机目录必须可写，否则容器起不来或写不进文件
-mkdir -p "$ENGINE_CONFIG_DIR" "$MONITOR_CONFIG_DIR" "$DOWNLOADS_DIR"
-chmod -R 777 "$ENGINE_CONFIG_DIR" "$MONITOR_CONFIG_DIR" "$DOWNLOADS_DIR" 2>/dev/null \
-  || warn "chmod 失败，若容器报权限错误请手动处理：sudo chmod -R 777 '$ENGINE_CONFIG_DIR' '$MONITOR_CONFIG_DIR' '$DOWNLOADS_DIR'"
-info "引擎配置/登录态 : $ENGINE_CONFIG_DIR/   (settings.db, cookies.json)"
-info "监控配置        : $MONITOR_CONFIG_DIR/monitor.db"
-info "音乐文件        : $DOWNLOADS_DIR/"
+# monitor 与 LX 网关以 uid=1000 运行，宿主机目录必须可写
+mkdir -p "$CONFIG_DIR" "$MUSIC_DIR"
+chmod -R 777 "$CONFIG_DIR" "$MUSIC_DIR" 2>/dev/null \
+  || warn "chmod 失败，若容器报权限错误请手动处理：sudo chmod -R 777 '$CONFIG_DIR' '$MUSIC_DIR'"
+info "全部配置与状态 : $CONFIG_DIR/"
+info "音乐库         : $MUSIC_DIR/"
 
 # ── 4. 拉取镜像 ────────────────────────────────────────────────────────────
 info "拉取镜像（国内直连 Docker Hub 常超时，下面若失败请看脚本末尾的加速器提示）..."
@@ -116,9 +114,8 @@ if ! "${DC[@]}" pull; then
   warn "      daocloud 只代理官方库镜像，拉用户镜像会 403。"
   warn ""
   warn "不想改全局配置的话，也可以把镜像地址写成带前缀的形式，"
-  warn "并把 docker-compose.yml 里 music-dl 的 image 一起改掉："
+  warn "也可以把镜像地址写成带前缀的形式："
   warn "  docker.1ms.run/baey666/music-monitor:latest"
-  warn "  docker.1ms.run/guohuiyuan/go-music-dl:latest"
   warn "--------------------------------------------------------------------"
   exit 1
 fi
@@ -132,34 +129,24 @@ info "容器状态："
 "${DC[@]}" ps
 
 PORT="$(envval MONITOR_PORT 9090)"
-EPORT="$(envval ENGINE_PORT 8085)"
 cat <<EOF
 
 ================================================================
 部署完成  （删容器不丢数据；配置全部集中在 config/，备份就打包它）
 
-  引擎配置与登录态   $ENGINE_CONFIG_DIR/
-                     ├── settings.db      引擎设置（含 downloadDir）
-                     └── cookies.json     各平台登录态
-  监控配置库         $MONITOR_CONFIG_DIR/monitor.db
-  音乐文件           $DOWNLOADS_DIR/
+  配置根目录         $CONFIG_DIR/
+                     ├── monitor/      用户、监控、Session 与加密主密钥
+                     ├── users/        用户独立加密平台凭据
+                     ├── lx/           LX 网关状态
+                     └── lx-sources/   LX 音源脚本
+  音乐库             $MUSIC_DIR/
 
   监控控制台   http://<NAS-IP>:${PORT}
-  下载引擎     http://<NAS-IP>:${EPORT}
+  首次使用：打开 :${PORT} 创建管理员 → 导入 LX 音源 → 每位用户独立扫码 → 建监控
 
-  首次使用必做（见 README「快速开始」第 4 步）：
-   1. 打开引擎页面 :${EPORT}，用日志里的初始化令牌建管理员账号
-        ${DC[*]} logs go-music-dl | grep "Web setup token"
-   2. 引擎设置里「下载目录 / downloadDir」保持默认 data/downloads 即可
-        · 它填的是**容器内路径**，默认值正好落在 $DOWNLOADS_DIR/
-        · 想看当前生效值：curl -s http://<NAS-IP>:${EPORT}/music/settings
-        · 改成容器内其它路径的话，必须同时在 compose 里加挂载，否则宿主机看不到文件
-   3. 扫码登录有会员的平台（这决定能拿到什么音质）
-   4. 回到 :${PORT} 建第一个监控
-
-  查看日志   ${DC[*]} logs -f monitor
+  查看日志   ${DC[*]} logs -f monitor lx-gateway platform-auth
   停止       ${DC[*]} down
   更新       ${DC[*]} pull && ${DC[*]} up -d
-  备份配置   tar czf config-backup-\$(date +%F).tar.gz '$ENGINE_CONFIG_DIR' '$MONITOR_CONFIG_DIR'
+  备份配置   tar czf config-backup-\$(date +%F).tar.gz '$CONFIG_DIR'
 ================================================================
 EOF

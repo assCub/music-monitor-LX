@@ -2,18 +2,33 @@
 from __future__ import annotations
 
 import logging
+import secrets
+import time
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from . import __version__, charts, pipeline, quality
-from .config import settings
-from .engine import EngineError
-from .runtime import db, engine, scheduler
+from .account_platforms import ACCOUNT_PLATFORMS, QR_LOGIN_SOURCES
+from .auth import current_user, current_user_id, require_admin
+from .config import apply_runtime_overrides, settings
+from .runtime import credential_store, db, discovery, lx_gateway, platform_auth, scheduler
 
 log = logging.getLogger("monitor.api")
 router = APIRouter(prefix="/api")
+
+# 浏览器只拿到一次性的代理会话 ID；平台返回的真实扫码 key 保留在服务端，
+# 并与发起登录的本地用户绑定，避免不同用户之间串用扫码结果。
+_platform_login_sessions: dict[str, dict[str, Any]] = {}
+_PLATFORM_LOGIN_TTL = 10 * 60
+
+
+@asynccontextmanager
+async def _catalog_for(user_id: str):
+    async with discovery.credentials(credential_store.load(user_id)):
+        yield discovery
 
 
 # --------------------------------------------------------------------------- 模型
@@ -23,7 +38,7 @@ class MonitorIn(BaseModel):
     enabled: bool = True
     sources: list[str] = Field(default_factory=list)
     target: dict[str, Any] = Field(default_factory=dict)
-    quality: str = "lossless"
+    quality: str = "master"
     fallback: str = "best_effort"
     auto_download: bool = True
     embed: bool = True
@@ -69,28 +84,35 @@ class RetryIn(BaseModel):
     track_ids: list[int]
 
 
+class PlatformLoginCheckIn(BaseModel):
+    key: str
+
+
+class PlatformCookieIn(BaseModel):
+    cookie: str
+
+
 # --------------------------------------------------------------------------- 总览
 @router.get("/health")
 async def health() -> dict[str, Any]:
-    eng = await engine.healthz()
+    user = current_user()
     return {
         "version": __version__,
-        "engine": {
-            "url": engine.base + engine.prefix,
-            # 「有账号」不等于「会话有效」，两者分开报，免得又出现「看着登录成功其实没登上」
-            "logged_in": engine.logged_in,
-            "session_ok": await engine.session_ok() if engine.logged_in else False,
-            **eng,
-        },
-        "scheduler": scheduler.status(),
-        "tracks": db.track_stats(),
-        "monitors": len(db.list_monitors()),
+        "lx_gateway": await lx_gateway.healthz(),
+        "discovery": {"ok": True, "kind": "direct", "platforms": ["qq", "netease"]},
+        "scheduler": {**scheduler.status(), "running_monitors": [
+            mid for mid in scheduler.status()["running_monitors"] if db.get_monitor(mid, user["id"]) is not None
+        ]},
+        "user": user,
+        "tracks": db.track_stats(user["id"]),
+        "monitors": len(db.list_monitors(user["id"])),
     }
 
 
 @router.get("/platforms")
 async def platforms() -> dict[str, Any]:
-    items = await engine.sources()
+    async with _catalog_for(current_user_id()) as catalog:
+        items = await catalog.sources()
     return {"items": items, "quality_levels": [
         {"key": k, "label": v["label"]} for k, v in quality.QUALITY_LEVELS.items()
     ]}
@@ -112,7 +134,8 @@ async def chart_resolve(key: str = "", platform: str = "", id: str = "", link: s
         entry = dict(found)
     else:
         entry = {"platform": platform, "id": id, "link": link}
-    result = await charts.resolve_chart(engine, entry)
+    async with _catalog_for(current_user_id()) as catalog:
+        result = await charts.resolve_chart(catalog, entry)
     songs = result["songs"]
     return {
         "ok": result["ok"],
@@ -143,7 +166,8 @@ async def chart_verify(payload: dict[str, Any]) -> dict[str, Any]:
 
     out = []
     for entry in entries[:40]:
-        result = await charts.resolve_chart(engine, entry)
+        async with _catalog_for(current_user_id()) as catalog:
+            result = await charts.resolve_chart(catalog, entry)
         out.append({
             "key": entry.get("key", ""),
             "name": entry.get("name") or entry.get("link") or entry.get("id"),
@@ -157,15 +181,178 @@ async def chart_verify(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- 歌单 / 收藏夹
+@router.get("/platform-login")
+async def platform_login_status() -> dict[str, Any]:
+    health = await platform_auth.healthz()
+    return {
+        "ok": bool(health.get("ok")),
+        "sources": health.get("sources") or [],
+        "configured": credential_store.configured(current_user_id()),
+    }
+
+
+@router.get("/platform-accounts")
+async def platform_accounts() -> dict[str, Any]:
+    user_id = current_user_id()
+    mapping = credential_store.load(user_id)
+    methods = db.get_user_setting(user_id, "platform_login_methods", {}) or {}
+    items = []
+    for source, meta in ACCOUNT_PLATFORMS.items():
+        label = meta["label"]
+        cookie = mapping.get(source, "")
+        profile = {"valid": False, "verified": False, "user_id": "", "nickname": "", "avatar": "", "vip_type": 0}
+        error = ""
+        if cookie:
+            try:
+                profile = await discovery.account_info(source, cookie)
+            except Exception as exc:  # noqa: BLE001
+                error = str(exc)
+        items.append({
+            "source": source, "label": label, "configured": bool(cookie),
+            "valid": bool(profile.get("valid")), "profile": profile,
+            "login_method": methods.get(source, "cookie" if cookie else ""), "error": error,
+            "fixed": bool(meta.get("fixed")), "qr_sources": list(meta.get("qr_sources") or []),
+            "cookie": bool(meta.get("cookie")), "verified_profile": bool(meta.get("verified_profile")),
+            "cookie_hint": meta.get("cookie_hint", ""),
+        })
+    return {"items": items}
+
+
+@router.post("/platform-accounts/other-cookies")
+async def platform_other_cookies(payload: CookiesIn) -> dict[str, Any]:
+    """批量配置没有扫码协议的平台；成功项会在账号中心追加独立标签。"""
+    user_id = current_user_id()
+    methods = db.get_user_setting(user_id, "platform_login_methods", {}) or {}
+    saved: list[str] = []
+    errors: dict[str, str] = {}
+    for raw_source, raw_cookie in payload.cookies.items():
+        source = str(raw_source or "").strip().lower()
+        cookie = str(raw_cookie or "").strip()
+        meta = ACCOUNT_PLATFORMS.get(source)
+        if not meta:
+            errors[source or "未知平台"] = "不支持的平台标识"
+            continue
+        if meta.get("qr_sources"):
+            errors[source] = "该平台支持扫码，请使用上方独立标签登录"
+            continue
+        if not cookie:
+            errors[source] = "Cookie 不能为空"
+            continue
+        try:
+            profile = await discovery.account_info(source, cookie)
+        except Exception as exc:  # noqa: BLE001
+            errors[source] = f"Cookie 校验失败：{exc}"
+            continue
+        if not profile.get("valid"):
+            errors[source] = "Cookie 格式无效或已经过期"
+            continue
+        credential_store.set_platform(user_id, source, cookie)
+        methods[source] = "cookie"
+        saved.append(source)
+    db.set_user_setting(user_id, "platform_login_methods", methods)
+    return {"ok": bool(saved), "saved": saved, "errors": errors}
+
+
+@router.post("/platform-accounts/{source}/cookie")
+async def platform_account_cookie(source: str, payload: PlatformCookieIn) -> dict[str, Any]:
+    if source not in ACCOUNT_PLATFORMS or not ACCOUNT_PLATFORMS[source].get("cookie"):
+        raise HTTPException(404, "暂不支持该平台")
+    cookie = payload.cookie.strip()
+    if not cookie:
+        raise HTTPException(400, "Cookie 不能为空")
+    try:
+        profile = await discovery.account_info(source, cookie)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"Cookie 校验失败：{exc}") from exc
+    if not profile.get("valid"):
+        raise HTTPException(400, "Cookie 无效或已经过期")
+    user_id = current_user_id()
+    credential_store.set_platform(user_id, source, cookie)
+    methods = db.get_user_setting(user_id, "platform_login_methods", {}) or {}
+    methods[source] = "cookie"
+    db.set_user_setting(user_id, "platform_login_methods", methods)
+    return {"ok": True, "source": source, "profile": profile}
+
+
+@router.delete("/platform-accounts/{source}")
+async def platform_account_logout(source: str) -> dict[str, Any]:
+    if source not in ACCOUNT_PLATFORMS:
+        raise HTTPException(404, "暂不支持该平台")
+    user_id = current_user_id()
+    credential_store.remove_platform(user_id, source)
+    methods = db.get_user_setting(user_id, "platform_login_methods", {}) or {}
+    methods.pop(source, None)
+    db.set_user_setting(user_id, "platform_login_methods", methods)
+    return {"ok": True, "source": source}
+
+
+@router.post("/platform-login/{source}/start")
+async def platform_login_start(source: str) -> dict[str, Any]:
+    if source not in QR_LOGIN_SOURCES:
+        raise HTTPException(404, "暂不支持该平台扫码")
+    try:
+        result = await platform_auth.start(source)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"生成二维码失败：{exc}") from exc
+    platform_key = str(result.get("key") or "").strip()
+    if not platform_key:
+        raise HTTPException(502, "扫码服务未返回有效会话")
+    now = time.monotonic()
+    for session_id, session in list(_platform_login_sessions.items()):
+        if float(session.get("expires_at") or 0) <= now:
+            _platform_login_sessions.pop(session_id, None)
+    session_id = secrets.token_urlsafe(24)
+    _platform_login_sessions[session_id] = {
+        "user_id": current_user_id(), "source": source, "key": platform_key,
+        "expires_at": now + _PLATFORM_LOGIN_TTL,
+    }
+    return {**result, "key": session_id}
+
+
+@router.post("/platform-login/{source}/check")
+async def platform_login_check(source: str, payload: PlatformLoginCheckIn) -> dict[str, Any]:
+    if source not in QR_LOGIN_SOURCES:
+        raise HTTPException(404, "暂不支持该平台扫码")
+    session = _platform_login_sessions.get(payload.key)
+    if not session or session.get("user_id") != current_user_id() or session.get("source") != source:
+        raise HTTPException(404, "扫码会话不存在，请重新生成二维码")
+    if float(session.get("expires_at") or 0) <= time.monotonic():
+        _platform_login_sessions.pop(payload.key, None)
+        return {"status": "expired", "message": "二维码已过期"}
+    try:
+        result = await platform_auth.check(source, str(session["key"]))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"检查扫码状态失败：{exc}") from exc
+    if result.get("status") in {"success", "expired", "failed"}:
+        _platform_login_sessions.pop(payload.key, None)
+    if result.get("status") == "success":
+        cookie = str(result.pop("cookie", "") or "").strip()
+        cookies = result.pop("cookies", {}) or {}
+        if not cookie and cookies:
+            cookie = "; ".join(f"{key}={value}" for key, value in sorted(cookies.items()) if value)
+        if not cookie:
+            raise HTTPException(502, "扫码成功但平台未返回 Cookie")
+        credential_source = "qq" if source in {"qq", "qq_wx"} else source
+        user_id = current_user_id()
+        credential_store.set_platform(user_id, credential_source, cookie)
+        methods = db.get_user_setting(user_id, "platform_login_methods", {}) or {}
+        methods[credential_source] = "qr" if source != "qq_wx" else "wechat_qr"
+        db.set_user_setting(user_id, "platform_login_methods", methods)
+        result["configured"] = credential_store.configured(user_id)
+        result["cookie_saved"] = True
+    return result
+
+
 @router.get("/playlists/resolve")
 async def playlist_resolve(link: str, limit: int = 60) -> dict[str, Any]:
     if not link.strip():
         raise HTTPException(400, "缺少歌单链接")
-    playlists = await engine.search_playlists(link.strip(), None)
-    if not playlists:
-        return {"ok": False, "message": "未能识别该链接，或该平台不支持歌单解析", "playlists": [], "songs": []}
-    first = playlists[0]
-    songs = await engine.playlist_songs(first["id"], first["source"], link=first.get("link") or "")
+    async with _catalog_for(current_user_id()) as catalog:
+        playlists = await catalog.search_playlists(link.strip(), None)
+        if not playlists:
+            return {"ok": False, "message": "未能识别该链接，或该平台不支持歌单解析", "playlists": [], "songs": []}
+        first = playlists[0]
+        songs = await catalog.playlist_songs(first["id"], first["source"], link=first.get("link") or "")
     return {
         "ok": bool(songs),
         "message": "" if songs else "歌单识别成功但取不到曲目（可能需要登录 Cookie）",
@@ -186,10 +373,15 @@ async def playlist_resolve(link: str, limit: int = 60) -> dict[str, Any]:
 async def favorites_list(payload: dict[str, Any]) -> dict[str, Any]:
     """列出已登录平台的个人歌单 / 收藏夹，供用户勾选要监控哪些。"""
     sources = payload.get("sources") or []
-    playlists = await engine.user_playlists(sources)
+    user_id = current_user_id()
+    try:
+        async with _catalog_for(user_id) as catalog:
+            playlists = await catalog.user_playlists(sources)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "message": str(exc), "items": []}
     return {
         "ok": bool(playlists),
-        "message": "" if playlists else "没有读到个人歌单，请先在 go-music-dl 里为该平台登录/配置 Cookie",
+        "message": "" if playlists else "没有读到个人歌单，请在当前用户设置中配置对应平台 Cookie",
         "items": [
             {**pl, "key": f"{pl['source']}:{pl['id']}"} for pl in playlists
         ],
@@ -199,7 +391,9 @@ async def favorites_list(payload: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- 监控 CRUD
 @router.get("/monitors")
 async def monitor_list() -> dict[str, Any]:
-    return {"items": db.list_monitors(), "running": scheduler.status()["running_monitors"]}
+    user_id = current_user_id()
+    running = [mid for mid in scheduler.status()["running_monitors"] if db.get_monitor(mid, user_id) is not None]
+    return {"items": db.list_monitors(user_id), "running": running}
 
 
 @router.post("/monitors")
@@ -207,42 +401,45 @@ async def monitor_create(payload: MonitorIn) -> dict[str, Any]:
     data = payload.model_dump()
     if not data["name"].strip():
         raise HTTPException(400, "监控名称不能为空")
-    mid = db.create_monitor(data)
-    return {"id": mid, "monitor": db.get_monitor(mid)}
+    user_id = current_user_id()
+    mid = db.create_monitor(data, user_id)
+    return {"id": mid, "monitor": db.get_monitor(mid, user_id)}
 
 
 @router.get("/monitors/{mid}")
 async def monitor_get(mid: int) -> dict[str, Any]:
-    mon = db.get_monitor(mid)
+    user_id = current_user_id()
+    mon = db.get_monitor(mid, user_id)
     if mon is None:
         raise HTTPException(404, "监控不存在")
     return {
         "monitor": mon,
-        "runs": db.recent_runs(mid, limit=20),
+        "runs": db.recent_runs(mid, limit=20, user_id=user_id),
         "stats": _monitor_stats(mid),
     }
 
 
 @router.patch("/monitors/{mid}")
 async def monitor_patch(mid: int, payload: MonitorPatch) -> dict[str, Any]:
-    if db.get_monitor(mid) is None:
+    user_id = current_user_id()
+    if db.get_monitor(mid, user_id) is None:
         raise HTTPException(404, "监控不存在")
     changes = payload.model_dump(exclude_none=True)
-    db.update_monitor(mid, changes)
+    db.update_monitor(mid, changes, user_id)
     if "interval_minutes" in changes:
         db.set_next_run(mid, interval_minutes=int(changes["interval_minutes"]))
-    return {"monitor": db.get_monitor(mid)}
+    return {"monitor": db.get_monitor(mid, user_id)}
 
 
 @router.delete("/monitors/{mid}")
 async def monitor_delete(mid: int) -> dict[str, Any]:
-    db.delete_monitor(mid)
+    db.delete_monitor(mid, current_user_id())
     return {"ok": True}
 
 
 @router.post("/monitors/{mid}/run")
 async def monitor_run(mid: int) -> dict[str, Any]:
-    if db.get_monitor(mid) is None:
+    if db.get_monitor(mid, current_user_id()) is None:
         raise HTTPException(404, "监控不存在")
     started = scheduler.spawn(mid)
     return {"ok": True, "started": started, "message": "已开始执行" if started else "该监控正在执行中"}
@@ -250,10 +447,13 @@ async def monitor_run(mid: int) -> dict[str, Any]:
 
 @router.post("/monitors/{mid}/preview")
 async def monitor_preview(mid: int, limit: int = 60) -> dict[str, Any]:
-    mon = db.get_monitor(mid)
+    mon = db.get_monitor(mid, current_user_id())
     if mon is None:
         raise HTTPException(404, "监控不存在")
-    return await pipeline.preview_monitor(engine, mon, limit=limit)
+    async with _catalog_for(current_user_id()) as catalog:
+        return await pipeline.preview_monitor(
+            catalog, mon, limit=limit, lx_gateway=lx_gateway,
+        )
 
 
 @router.post("/preview")
@@ -263,17 +463,23 @@ async def draft_preview(payload: PreviewIn) -> dict[str, Any]:
     draft["name"] = "preview"
     draft["fallback"] = "best_effort"
     draft["embed"] = True
-    return await pipeline.preview_monitor(engine, draft, limit=60)
+    draft["user_id"] = current_user_id()
+    async with _catalog_for(current_user_id()) as catalog:
+        return await pipeline.preview_monitor(
+            catalog, draft, limit=60, lx_gateway=lx_gateway,
+        )
 
 
 @router.get("/monitors/{mid}/runs")
 async def monitor_runs(mid: int, limit: int = 30) -> dict[str, Any]:
-    return {"items": db.recent_runs(mid, limit=limit)}
+    if db.get_monitor(mid, current_user_id()) is None:
+        raise HTTPException(404, "监控不存在")
+    return {"items": db.recent_runs(mid, limit=limit, user_id=current_user_id())}
 
 
 @router.get("/runs")
 async def run_list(limit: int = 50) -> dict[str, Any]:
-    return {"items": db.recent_runs(None, limit=limit)}
+    return {"items": db.recent_runs(None, limit=limit, user_id=current_user_id())}
 
 
 # --------------------------------------------------------------------------- 曲目记录
@@ -281,8 +487,10 @@ async def run_list(limit: int = 50) -> dict[str, Any]:
 async def track_list(monitor_id: int | None = None, status: str | None = None, limit: int = 100, offset: int = 0) -> dict[str, Any]:
     limit = max(1, min(limit, 500))
     return {
-        "items": db.list_tracks(monitor_id=monitor_id, status=status, limit=limit, offset=offset),
-        "stats": db.track_stats(),
+        "items": db.list_tracks(
+            monitor_id=monitor_id, status=status, limit=limit, offset=offset, user_id=current_user_id()
+        ),
+        "stats": db.track_stats(current_user_id()),
     }
 
 
@@ -290,7 +498,10 @@ async def track_list(monitor_id: int | None = None, status: str | None = None, l
 async def track_retry(payload: RetryIn) -> dict[str, Any]:
     results = []
     for tid in payload.track_ids[:20]:
-        row = db.one("SELECT * FROM tracks WHERE id = ?", (tid,))
+        row = db.one(
+            "SELECT t.* FROM tracks t JOIN monitors m ON m.id=t.monitor_id WHERE t.id=? AND m.user_id=?",
+            (tid, current_user_id()),
+        )
         if row is None:
             results.append({"id": tid, "ok": False, "message": "记录不存在"})
             continue
@@ -305,131 +516,171 @@ async def track_retry(payload: RetryIn) -> dict[str, Any]:
             "cover": track["cover"], "extra": _loads(track["extra"]),
         }
         try:
-            res = await pipeline.redownload(db, engine, mon, song)
+            res = await pipeline.redownload(db, mon, song, lx_gateway=lx_gateway)
         except Exception as exc:  # noqa: BLE001
             res = {"ok": False, "message": str(exc)}
         results.append({"id": tid, **res})
     return {"items": results}
 
 
-# --------------------------------------------------------------------------- 引擎侧设置
-@router.get("/engine/settings")
-async def engine_settings() -> dict[str, Any]:
-    return {"settings": await engine.settings()}
-
-
-@router.post("/engine/login")
-async def engine_login(payload: LoginIn) -> dict[str, Any]:
-    """登录引擎。
-
-    ⚠️ 只有**真正拿到并验证过会话**才落库。上游失败时返回的是 200 + 登录页，
-    以前这里把「cookie jar 非空」当成功，于是乱输的账号密码也会显示「登录成功」
-    并覆盖掉原本正确的凭据 —— 这就是「账号密码固化不下来」的根因。
-    """
-    result = await engine.login(payload.username, payload.password)
-    if result["ok"]:
-        db.set_setting("engine_username", payload.username)
-        db.set_setting("engine_password", payload.password)
-        # 顺手报一下这个账号在引擎里配好了哪些平台 Cookie，方便判断会员音质能不能拿到
-        result["configured"] = sorted((await engine.get_cookies()).keys())
-    else:
-        # 失败时不动已保存的凭据（原来的可能是对的），让用户看清原因后重试
-        result["saved_username"] = db.get_setting("engine_username") or ""
-    return result
-
-
-@router.post("/engine/logout")
-async def engine_logout() -> dict[str, Any]:
-    """退出引擎登录：丢掉本地会话与已保存的账号密码。
-
-    没有这个出口的话，一个错误的旧会话会一直挂在连接池里，
-    后续接口拿它去请求都会「看起来能用」，错误无法暴露也无法清除。
-    """
-    db.set_setting("engine_username", "")
-    db.set_setting("engine_password", "")
-    return await engine.logout()
-
-
-@router.get("/engine/session")
-async def engine_session() -> dict[str, Any]:
-    """引擎会话现状：是否持有凭据、此刻是否仍然有效。
-
-    顺手做一次自愈：会话丢了但设置里存过账号密码，就用它自动重登 ——
-    这样刷新页面看到的不再是「要重新登录」，而是已经恢复好的会话。
-    """
-    await engine.ensure_session()
-    logged_in = engine.logged_in
+@router.get("/platform-credentials")
+async def platform_credentials() -> dict[str, Any]:
+    configured = credential_store.configured(current_user_id())
     return {
-        "logged_in": logged_in,
-        "session_ok": await engine.session_ok() if logged_in else False,
-        "saved_username": db.get_setting("engine_username") or "",
+        "ok": bool(configured),
+        "configured": configured,
+        "message": "" if configured else "当前用户尚未配置任何平台 Cookie",
     }
 
 
-@router.get("/engine/cookies")
-async def engine_cookies() -> dict[str, Any]:
-    cookies = await engine.get_cookies()
-    return {
-        "ok": bool(cookies),
-        "configured": sorted(cookies.keys()),
-        "message": "" if cookies else "尚未登录引擎或引擎未配置任何平台 Cookie",
-    }
-
-
-@router.post("/engine/cookies")
-async def engine_set_cookies(payload: CookiesIn) -> dict[str, Any]:
-    try:
-        return await engine.push_cookies(payload.cookies)
-    except EngineError as exc:
-        raise HTTPException(400, str(exc)) from exc
-
-
-@router.post("/engine/settings")
-async def engine_save_settings(payload: dict[str, Any]) -> dict[str, Any]:
-    try:
-        return await engine.save_settings(payload)
-    except EngineError as exc:
-        raise HTTPException(400, str(exc)) from exc
+@router.post("/platform-credentials")
+async def platform_credentials_save(payload: CookiesIn) -> dict[str, Any]:
+    user_id = current_user_id()
+    credential_store.save(user_id, payload.cookies)
+    return {"ok": True, "configured": credential_store.configured(user_id)}
 
 
 # --------------------------------------------------------------------------- 本服务设置
 @router.get("/settings")
 async def settings_get() -> dict[str, Any]:
+    user = current_user()
     data = db.all_settings()
     # 引擎管理员密码只用于服务端自动重登，不回传给浏览器
-    saved_password = data.pop("engine_password", "")
-    return {"settings": data, "engine_password_saved": bool(saved_password), "limits": {
+    data.pop("engine_password", None)
+    data.setdefault("download_concurrency", settings.download_concurrency)
+    data.setdefault("download_retries", settings.download_retries)
+    data.setdefault("download_batch", settings.download_batch)
+    data.setdefault("download_batch_gap", settings.download_batch_gap)
+    data.setdefault("download_timeout", settings.download_timeout)
+    data.setdefault("lx_platform_priority", list(settings.lx_platform_priority))
+    data.setdefault("lx_quality_floor", settings.lx_quality_floor)
+    data.setdefault("lx_search_limit", settings.lx_search_limit)
+    data.setdefault("lx_match_threshold", settings.lx_match_threshold)
+    data.setdefault("lx_download_subdir", db.get_setting("lx_download_subdir", ""))
+    data.setdefault("lx_filename_template", settings.lx_filename_template)
+    data.setdefault("lx_artist_dir", settings.lx_artist_dir)
+    data.setdefault("tick_seconds", settings.tick_seconds)
+    data.setdefault("max_downloads_per_run", settings.max_downloads_per_run)
+    data.update(db.all_user_settings(user["id"]))
+    if user.get("role") != "admin":
+        for key in (
+            "download_concurrency", "download_retries",
+            "download_batch", "download_batch_gap", "download_timeout", "tick_seconds",
+            "max_downloads_per_run", "lx_platform_priority", "lx_quality_floor", "lx_search_limit",
+            "lx_match_threshold",
+        ):
+            data.pop(key, None)
+    return {"settings": data, "limits": {
         "tick_seconds": settings.tick_seconds,
         "download_concurrency": settings.download_concurrency,
         "download_batch": settings.download_batch,
         "download_batch_gap": settings.download_batch_gap,
         "download_timeout": settings.download_timeout,
         "max_downloads_per_run": settings.max_downloads_per_run,
-        "engine_url": engine.base + engine.prefix,
     }}
 
 
 @router.post("/settings")
 async def settings_post(payload: dict[str, Any]) -> dict[str, Any]:
+    user = current_user()
+    if "lx_download_subdir" in (payload or {}):
+        value = str(payload.get("lx_download_subdir") or "").strip()
+        if value.startswith("/") or ".." in value.replace("\\", "/").split("/"):
+            raise HTTPException(400, "LX 下载子目录必须是挂载根目录下的相对路径")
+    user_keys = {"default_quality", "default_interval_minutes", "default_max_downloads", "default_embed", "default_fallback", "lx_download_subdir", "lx_filename_template", "lx_artist_dir"}
+    system_payload: dict[str, Any] = {}
     for key, value in (payload or {}).items():
-        db.set_setting(key, value)
-    return {"settings": db.all_settings()}
+        if key in user_keys:
+            db.set_user_setting(user["id"], key, value)
+        elif user.get("role") == "admin":
+            db.set_setting(key, value)
+            system_payload[key] = value
+        else:
+            raise HTTPException(403, f"普通用户不能修改系统设置：{key}")
+    apply_runtime_overrides(system_payload)
+    data = db.all_user_settings(user["id"])
+    if user.get("role") == "admin":
+        data = {**db.all_settings(), **data}
+    data.pop("engine_password", None)
+    return {"settings": data}
 
 
-@router.post("/settings/engine-login")
-async def settings_engine_login() -> dict[str, Any]:
-    """用已保存的引擎管理员账号重新登录（引擎重启后会话会失效）。"""
-    username = db.get_setting("engine_username") or ""
-    password = db.get_setting("engine_password") or ""
-    if not username:
-        raise HTTPException(400, "尚未保存引擎管理员账号")
-    result = await engine.login(str(username), str(password))
-    if not result["ok"]:
-        # 保存的凭据已经不可用，直接清掉，免得下次开机又拿它去撞
-        db.set_setting("engine_username", "")
-        db.set_setting("engine_password", "")
-        result["detail"] = f"已保存的引擎账号已失效并清除：{result['detail']}"
-    return result
+@router.get("/lx")
+async def lx_status() -> dict[str, Any]:
+    try:
+        health = await lx_gateway.healthz()
+        config = await lx_gateway.config()
+        sources = await lx_gateway.sources()
+        return {
+            "enabled": True,
+            "backend": "lx",
+            "health": health,
+            "config": config,
+            "sources": sources,
+            "priority": list(settings.lx_platform_priority),
+            "quality_floor": settings.lx_quality_floor,
+            "download_subdir": db.get_setting("lx_download_subdir", ""),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"enabled": True, "backend": "lx", "health": {"ok": False, "detail": str(exc)}, "sources": []}
+
+
+@router.post("/lx/reload")
+async def lx_reload() -> dict[str, Any]:
+    require_admin()
+    try:
+        return await lx_gateway.reload_sources()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"LX 音源重载失败：{exc}") from exc
+
+
+class LxSourceImportIn(BaseModel):
+    url: str = ""
+    script: str = ""
+    name: str = ""
+
+
+@router.post("/lx/sources")
+async def lx_source_import(payload: LxSourceImportIn) -> dict[str, Any]:
+    require_admin()
+    try:
+        return await lx_gateway.import_source(url=payload.url, script=payload.script, name=payload.name)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"LX 音源导入失败：{exc}") from exc
+
+
+@router.delete("/lx/sources/{source_id}")
+async def lx_source_delete(source_id: str) -> dict[str, Any]:
+    require_admin()
+    try:
+        return await lx_gateway.delete_source(source_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"LX 音源删除失败：{exc}") from exc
+
+
+@router.post("/lx/sources/{source_id}/enable")
+async def lx_source_enable(source_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    require_admin()
+    try:
+        return await lx_gateway.set_source_enabled(source_id, bool(payload.get("enabled", True)))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"LX 音源状态修改失败：{exc}") from exc
+
+
+@router.get("/lx/downloads")
+async def lx_downloads(limit: int = 100) -> dict[str, Any]:
+    try:
+        return {"items": await lx_gateway.downloads(limit=max(1, min(limit, 500)), user_id=current_user_id())}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"读取 LX 下载列表失败：{exc}") from exc
+
+
+@router.delete("/lx/downloads/completed")
+async def lx_downloads_clear() -> dict[str, Any]:
+    try:
+        return await lx_gateway.clear_completed_downloads(user_id=current_user_id())
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"清理 LX 下载列表失败：{exc}") from exc
 
 
 # --------------------------------------------------------------------------- 工具

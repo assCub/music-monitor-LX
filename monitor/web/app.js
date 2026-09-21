@@ -17,6 +17,12 @@ const App = (() => {
     sourcesSel: new Set(),
     chartSel: new Set(),
     favSel: new Set(),
+    user: null,
+    needsSetup: false,
+    platformLogin: null,
+    platformAccounts: [],
+    activePlatform: 'netease',
+    activePlatformMethod: 'qr',
   };
 
   /* ------------------------------------------------------------ 基础工具 */
@@ -28,10 +34,76 @@ const App = (() => {
     let data = null;
     try { data = await res.json(); } catch (_) { data = null; }
     if (!res.ok) {
+      if (res.status === 401 || res.status === 428) showAuth(res.status === 428);
       const msg = (data && (data.detail || data.message || data.error)) || ('HTTP ' + res.status);
       throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
     }
     return data;
+  }
+
+  async function initAuth() {
+    try {
+      const res = await fetch('/api/auth/status');
+      const data = await res.json();
+      state.needsSetup = !!data.needs_setup;
+      state.user = data.user || null;
+      if (!data.authenticated) {
+        showAuth(state.needsSetup);
+        return false;
+      }
+      applyUserState();
+      $('auth-screen').classList.add('hidden');
+      return true;
+    } catch (err) {
+      showAuth(false);
+      $('auth-result').textContent = err.message;
+      return false;
+    }
+  }
+
+  function showAuth(setup = false) {
+    state.needsSetup = setup;
+    $('auth-screen').classList.remove('hidden');
+    $('auth-title').textContent = setup ? '创建首位管理员' : '登录';
+    $('auth-hint').textContent = setup ? '首次使用，请创建管理员账号。现有订阅会迁移给该管理员。' : '请输入你的账号密码。';
+    $('auth-display-row').style.display = setup ? '' : 'none';
+    $('auth-submit').textContent = setup ? '创建并进入' : '登录';
+  }
+
+  async function submitAuth() {
+    const payload = {
+      username: $('auth-username').value.trim(),
+      password: $('auth-password').value,
+      display_name: $('auth-display-name').value.trim(),
+    };
+    $('auth-result').textContent = state.needsSetup ? '正在初始化…' : '正在登录…';
+    try {
+      const res = await fetch('/api/auth/' + (state.needsSetup ? 'setup' : 'login'), {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || data.error || '认证失败');
+      state.user = data.user;
+      $('auth-password').value = '';
+      $('auth-screen').classList.add('hidden');
+      applyUserState();
+      await refreshAll();
+    } catch (err) { $('auth-result').innerHTML = `<span style="color:var(--err)">${esc(err.message)}</span>`; }
+  }
+
+  function applyUserState() {
+    if (!state.user) return;
+    $('user-pill').style.display = '';
+    $('logout-btn').style.display = '';
+    $('user-text').textContent = `${state.user.display_name || state.user.username} · ${state.user.role}`;
+    $('user-admin-card').style.display = state.user.role === 'admin' ? '' : 'none';
+    document.querySelectorAll('#page-settings .admin-only').forEach((el) => { el.style.display = state.user.role === 'admin' ? '' : 'none'; });
+  }
+
+  async function logoutUser() {
+    await fetch('/api/auth/logout', {method:'POST'});
+    state.user = null;
+    showAuth(false);
   }
 
   const esc = (s) => String(s == null ? '' : s)
@@ -83,7 +155,7 @@ const App = (() => {
   function switchTab(name) {
     document.querySelectorAll('nav.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
     document.querySelectorAll('.page').forEach((p) => p.classList.toggle('active', p.id === 'page-' + name));
-    if (name === 'records') loadRuns();
+    if (name === 'records') { loadRuns(); loadLxDownloads(); }
     if (name === 'settings') loadSettings();
   }
 
@@ -113,50 +185,22 @@ const App = (() => {
   }
 
   async function checkEngine() {
-    let sess = null;
-    try { sess = await api('/engine/session'); } catch (_) { /* 拿不到就退回 /health 的口径 */ }
     try {
       const data = await api('/health');
-      const ok = data.engine && data.engine.ok;
+      const ok = data.discovery?.ok && data.lx_gateway?.ok;
       if ($('app-version')) $('app-version').textContent = '版本 v' + (data.version || '未知');
       $('engine-pill').className = 'pill ' + (ok ? 'ok' : 'bad');
-      $('engine-text').textContent = ok ? '引擎正常' : '引擎不可用';
+      $('engine-text').textContent = ok ? '发现/LX 正常' : '服务异常';
       const s = data.scheduler || {};
       $('sched-pill').className = 'pill';
       $('sched-text').textContent = '调度 ' + (s.last_tick_ago == null ? '启动中' : s.last_tick_ago + 's 前') +
         ' · 运行中 ' + (s.running_monitors || []).length;
-      $('engine-info').innerHTML = [
-        ['引擎地址', data.engine.url],
-        ['连接状态', ok ? '正常' : ('失败 — ' + (data.engine.detail || ''))],
-        ['引擎登录', sessionText(data.engine, sess)],
-        ['调度心跳', (s.tick_seconds || '—') + ' 秒'],
-        ['并行监控上限', s.parallel_limit],
-        ['单监控并发下载', s.download_concurrency],
-        ['曲目记录', JSON.stringify(data.tracks || {})],
-      ].map(([k, v]) => `<span>${esc(k)}：<b>${esc(v)}</b></span>`).join('');
       return ok;
     } catch (err) {
       $('engine-pill').className = 'pill bad';
       $('engine-text').textContent = '后端异常';
       return false;
     }
-  }
-
-  function sessionText(eng, sess) {
-    // 优先用 /engine/session 的口径（它会顺手自动恢复会话），拿不到再退回 /health 的
-    if (sess) {
-      const saved = sess.saved_username ? '（账号 ' + sess.saved_username + '）' : '';
-      if (sess.logged_in && sess.session_ok) return '已登录，会话有效' + saved;
-      if (!sess.logged_in) {
-        return '未登录' + (saved
-          ? '，已保存账号 ' + sess.saved_username + '，会话丢失时会自动恢复'
-          : '（搜索/下载不需要登录，只有代写 Cookie 才需要）');
-      }
-      return '持有凭据但会话已失效，请重新登录';
-    }
-    if (!eng) return '未知';
-    if (!eng.logged_in) return '未登录（搜索/下载不需要登录，只有代写 Cookie 才需要）';
-    return eng.session_ok ? '已登录，会话有效' : '持有凭据但会话已失效，请重新登录';
   }
 
   function fillQualitySelects() {
@@ -551,28 +595,186 @@ const App = (() => {
     retryTracks(ids);
   }
 
+  function fmtBytes(value) {
+    const n = Number(value) || 0;
+    if (!n) return '—';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  async function loadLxDownloads() {
+    const body = $('lx-download-body');
+    if (!body) return;
+    try {
+      const data = await api('/lx/downloads?limit=100');
+      body.innerHTML = (data.items || []).map((item) => {
+        const progress = Math.max(0, Math.min(1, Number(item.progress) || 0));
+        const percent = Math.round(progress * 100);
+        const statusClass = item.status === 'completed' ? 'downloaded' : (item.status === 'failed' ? 'failed' : (item.status === 'skipped' ? 'skipped' : 'pending'));
+        return `<tr>
+          <td><b>${esc(item.name)}</b><div class="small muted">${esc(item.artist)}</div></td>
+          <td><span class="status ${statusClass}">${esc(item.status)}</span></td>
+          <td class="small">${esc(item.quality || item.requested_quality || '')} / ${esc(item.platform || '')}</td>
+          <td style="min-width:140px"><div class="progress"><span style="width:${percent}%"></span></div><div class="small muted">${percent}%</div></td>
+          <td class="small">${fmtBytes(item.downloaded_bytes)}${item.total_bytes ? ' / ' + fmtBytes(item.total_bytes) : ''}</td>
+          <td class="small muted" title="${esc(item.path || item.error || '')}">${esc((item.path || item.error || '').slice(0, 80))}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="6" class="empty">暂无 LX 下载任务</td></tr>';
+    } catch (err) {
+      body.innerHTML = `<tr><td colspan="6" class="empty">${esc(err.message)}</td></tr>`;
+    }
+  }
+
+  async function clearLxDownloads() {
+    try { await api('/lx/downloads/completed', { method: 'DELETE' }); await loadLxDownloads(); }
+    catch (err) { toast('清理失败：' + err.message); }
+  }
+
   /* ------------------------------------------------------------ 设置 */
   async function loadSettings() {
     try {
       const r = await api('/settings');
       const s = r.settings || {};
-      $('s-quality').value = s.default_quality || 'lossless';
+      $('s-quality').value = s.default_quality || 'master';
       $('s-interval').value = s.default_interval_minutes || 360;
       $('s-max').value = s.default_max_downloads || 30;
       $('s-embed').value = String(s.default_embed != null ? s.default_embed : 1);
-      $('engine-username').value = s.engine_username || '';
+      fillLxRuntimeSettings(s);
       if (Object.keys(s).length) { /* noop */ }
     } catch (err) { toast(err.message); }
-
-    try {
-      const r = await api('/engine/settings');
-      const s = r.settings || {};
-      const rows = Object.entries(s).map(([k, v]) => `<tr><td class="mono">${esc(k)}</td><td class="mono">${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</td></tr>`);
-      $('engine-settings-body').innerHTML = rows.join('') || '<tr><td colspan="2" class="empty">读不到引擎设置</td></tr>';
-    } catch (err) {
-      $('engine-settings-body').innerHTML = `<tr><td colspan="2" class="empty">${esc(err.message)}</td></tr>`;
-    }
     await checkEngine();
+    await loadPlatformAccounts();
+    await loadLxSettings(false);
+    if (state.user?.role === 'admin') await loadUsers();
+  }
+
+  function fillLxRuntimeSettings(s) {
+    const set = (id, value) => { if ($(id) && value != null) $(id).value = value; };
+    set('lx-tick-seconds', s.tick_seconds || 60);
+    set('lx-global-max', s.max_downloads_per_run != null ? s.max_downloads_per_run : 0);
+    set('lx-concurrency', s.download_concurrency || 1);
+    set('lx-retries', s.download_retries != null ? s.download_retries : 2);
+    set('lx-batch', s.download_batch || 8);
+    set('lx-batch-gap', s.download_batch_gap != null ? s.download_batch_gap : 3);
+    set('lx-timeout', s.download_timeout || 300);
+    set('lx-download-subdir', s.lx_download_subdir || '');
+    set('lx-filename-template', s.lx_filename_template || '{artist} - {name}');
+    set('lx-artist-dir', s.lx_artist_dir === false ? '0' : '1');
+    set('lx-priority', Array.isArray(s.lx_platform_priority) ? s.lx_platform_priority.join(',') : (s.lx_platform_priority || 'tx,kg,kw,mg,wy'));
+    set('lx-quality-floor', s.lx_quality_floor || '128k');
+    set('lx-search-limit', s.lx_search_limit || 30);
+    set('lx-match-threshold', s.lx_match_threshold != null ? s.lx_match_threshold : 0.76);
+  }
+
+  async function loadLxSettings(loadSaved = true) {
+    const pill = $('lx-status-pill'), text = $('lx-status-text');
+    if (!pill || !text) return;
+    text.textContent = '检测中…'; pill.classList.remove('ok', 'bad');
+    try {
+      if (loadSaved) {
+        const saved = await api('/settings');
+        fillLxRuntimeSettings(saved.settings || {});
+      }
+      const r = await api('/lx');
+      const ok = r.health && r.health.ok;
+      pill.classList.toggle('ok', !!ok); pill.classList.toggle('bad', !ok);
+      text.textContent = ok
+        ? `LX 正常 · ${(r.sources || []).filter((x) => x.enabled).length} 个已启用`
+        : `LX 异常 · ${r.health?.detail || '未连接'}`;
+      const root = r.config?.download_root || '/downloads';
+      $('lx-path-hint').textContent = `Compose 授权的容器下载根目录：${root}。网页只能选择这个目录下的相对子目录；宿主机真实路径仍在 docker-compose.yml 中配置。`;
+      renderLxSources(r.sources || []);
+    } catch (err) {
+      pill.classList.add('bad'); text.textContent = 'LX 连接失败';
+      $('lx-source-list').innerHTML = `<div class="notice err">${esc(err.message)}</div>`;
+    }
+  }
+
+  function renderLxSources(items) {
+    const box = $('lx-source-list');
+    if (!box) return;
+    box.innerHTML = items.map((item) => {
+      const platforms = Object.entries(item.sources || {}).map(([key, info]) => `${key}: ${(info.qualitys || []).join('/')}`).join(' · ');
+      return `<div class="card monitor-card" style="margin:0">
+        <div class="monitor-head"><div><div class="title">${esc(item.name || item.id)}</div><div class="sub mono">${esc(item.id)}</div></div><div class="spacer"></div>
+          <span class="status ${item.enabled && item.loaded ? 'downloaded' : 'skipped'}">${item.enabled ? (item.loaded ? '已启用' : '加载失败') : '已停用'}</span></div>
+        <div class="small ${item.error ? '' : 'muted'}" style="${item.error ? 'color:var(--err)' : ''}">${esc(item.error || platforms || '未声明可用平台')}</div>
+        <div class="row">
+          <button class="btn small" onclick="App.toggleLxSource('${esc(item.id)}', ${item.enabled ? 'false' : 'true'})">${item.enabled ? '停用' : '启用'}</button>
+          <button class="btn small danger" onclick="App.deleteLxSource('${esc(item.id)}')">删除</button>
+        </div></div>`;
+    }).join('') || '<div class="empty">还没有音源。可从 URL、本地文件或脚本文本导入。</div>';
+  }
+
+  async function saveLxSettings() {
+    try {
+      const priority = $('lx-priority').value.split(',').map((x) => x.trim()).filter(Boolean);
+      const payload = {
+        lx_download_subdir: $('lx-download-subdir').value.trim(),
+        lx_filename_template: $('lx-filename-template').value.trim() || '{artist} - {name}',
+        lx_artist_dir: $('lx-artist-dir').value === '1',
+      };
+      if (state.user?.role === 'admin') Object.assign(payload, {
+        tick_seconds: Number($('lx-tick-seconds').value) || 60,
+        max_downloads_per_run: Number($('lx-global-max').value) || 0,
+        download_concurrency: Number($('lx-concurrency').value) || 1,
+        download_retries: Number($('lx-retries').value) || 0, download_batch: Number($('lx-batch').value) || 8,
+        download_batch_gap: Number($('lx-batch-gap').value) || 0, download_timeout: Number($('lx-timeout').value) || 300,
+        lx_platform_priority: priority, lx_quality_floor: $('lx-quality-floor').value,
+        lx_search_limit: Number($('lx-search-limit').value) || 30,
+        lx_match_threshold: Number($('lx-match-threshold').value) || 0.76,
+      });
+      await api('/settings', { method: 'POST', body: JSON.stringify(payload) });
+      toast('LX 下载设置已保存，新任务立即生效');
+      await loadLxSettings();
+    } catch (err) { toast('保存失败：' + err.message); }
+  }
+
+  async function reloadLxSources() {
+    try { await api('/lx/reload', { method: 'POST' }); toast('音源目录已重新加载'); await loadLxSettings(false); }
+    catch (err) { toast('重载失败：' + err.message); }
+  }
+
+  async function importLxSource(payload) {
+    const result = $('lx-source-result');
+    result.textContent = '正在验证并导入音源…';
+    try {
+      const r = await api('/lx/sources', { method: 'POST', body: JSON.stringify({ name: $('lx-source-name').value.trim(), ...payload }) });
+      result.innerHTML = `<span style="color:var(--ok)">导入成功：${esc(r.item?.name || r.item?.id || '')}</span>`;
+      $('lx-source-url').value = ''; $('lx-source-script').value = ''; $('lx-source-file').value = '';
+      await loadLxSettings(false);
+    } catch (err) { result.innerHTML = `<span style="color:var(--err)">${esc(err.message)}</span>`; }
+  }
+
+  function importLxSourceUrl() {
+    const url = $('lx-source-url').value.trim();
+    if (!url) return toast('请填写音源 URL');
+    return importLxSource({ url });
+  }
+
+  function importLxSourceText() {
+    const script = $('lx-source-script').value;
+    if (!script.trim()) return toast('请粘贴音源脚本');
+    return importLxSource({ script });
+  }
+
+  async function importLxSourceFile() {
+    const file = $('lx-source-file').files?.[0];
+    if (!file) return toast('请先选择音源脚本文件');
+    if (file.size > 5 * 1024 * 1024) return toast('音源脚本不能超过 5MB');
+    if (!$('lx-source-name').value.trim()) $('lx-source-name').value = file.name.replace(/\.[^.]+$/, '');
+    return importLxSource({ script: await file.text() });
+  }
+
+  async function toggleLxSource(id, enabled) {
+    try { await api(`/lx/sources/${encodeURIComponent(id)}/enable`, { method: 'POST', body: JSON.stringify({ enabled }) }); await loadLxSettings(false); }
+    catch (err) { toast('修改音源状态失败：' + err.message); }
+  }
+
+  async function deleteLxSource(id) {
+    if (!confirm(`确定删除音源 ${id}？对应脚本文件也会删除。`)) return;
+    try { await api(`/lx/sources/${encodeURIComponent(id)}`, { method: 'DELETE' }); toast('音源已删除'); await loadLxSettings(false); }
+    catch (err) { toast('删除失败：' + err.message); }
   }
 
   async function saveSettings() {
@@ -590,60 +792,317 @@ const App = (() => {
     } catch (err) { toast(err.message); }
   }
 
-  async function engineLogin() {
-    const box = $('engine-login-result');
-    const u = $('engine-username').value.trim();
-    const p = $('engine-password').value;
-    if (!u || !p) { box.innerHTML = '<span style="color:var(--err)">请填写引擎管理员账号与密码</span>'; return; }
-    box.textContent = '正在登录引擎…';
+  const PLATFORM_META = {
+    netease: {label:'网易云音乐', short:'易', app:'网易云音乐 App', cookie:'MUSIC_U=...; __csrf=...'},
+    qq: {label:'QQ 音乐', short:'Q', app:'QQ 或微信', cookie:'uin=...; qm_keyst=...; qqmusic_key=...'},
+    kugou: {label:'酷狗音乐', short:'K', app:'酷狗音乐 App', cookie:'userid=...; token=...; KUGOU_API_MID=...'},
+    bilibili: {label:'哔哩哔哩', short:'B', app:'哔哩哔哩 App', cookie:'SESSDATA=...; bili_jct=...; DedeUserID=...'},
+    soda: {label:'汽水音乐', short:'汽', app:'抖音或汽水音乐 App', cookie:'sessionid=...; uid_tt=...'},
+    kuwo: {label:'酷我音乐', short:'酷', app:'酷我音乐', cookie:'kw_token=...; userid=...'},
+    migu: {label:'咪咕音乐', short:'咪', app:'咪咕音乐', cookie:'完整粘贴咪咕音乐网页 Cookie'},
+  };
+
+  const QR_LABELS = {
+    netease:'生成网易云二维码', qq:'使用 QQ 扫码', qq_wx:'使用微信扫码',
+    kugou:'生成酷狗二维码', bilibili:'生成哔哩哔哩二维码', soda:'生成汽水音乐二维码',
+  };
+
+  function platformMeta(source) {
+    const account = state.platformAccounts.find((item) => item.source === source) || {};
+    return {...(PLATFORM_META[source] || {label:source, short:String(source || '?').slice(0, 1).toUpperCase()}), ...account,
+      cookie:account.cookie_hint || PLATFORM_META[source]?.cookie || '完整 Cookie'};
+  }
+
+  function accountStatus(account) {
+    if (account?.valid && (account.qr_sources?.length || account.profile?.verified)) return {label:'已登录', cls:'online'};
+    if (account?.valid) return {label:'已配置', cls:'online'};
+    if (account?.configured) return {label:'登录已失效', cls:'expired'};
+    return {label:'未登录', cls:'offline'};
+  }
+
+  function visiblePlatformAccounts() {
+    return state.platformAccounts.filter((item) => item.fixed || item.configured);
+  }
+
+  function renderPlatformTabs() {
+    const box = $('platform-switcher');
+    if (!box) return;
+    const tabs = visiblePlatformAccounts().map((item) => {
+      const meta = platformMeta(item.source), status = accountStatus(item);
+      return `<button class="platform-tab ${item.source === state.activePlatform ? 'active' : ''}" id="platform-tab-${esc(item.source)}" data-platform="${esc(item.source)}" role="tab" onclick="App.switchPlatformAccount('${esc(item.source)}')">
+        <span class="platform-logo ${esc(item.source)}">${esc(meta.short)}</span><span><b>${esc(meta.label)}</b><small class="${status.cls}">${esc(status.label)}</small></span>
+      </button>`;
+    });
+    tabs.push(`<button class="platform-tab platform-tab-other ${state.activePlatform === '__other__' ? 'active' : ''}" id="platform-tab-other" data-platform="other" role="tab" onclick="App.switchPlatformAccount('__other__')">
+      <span class="platform-logo other">+</span><span><b>其他平台</b><small>JSON 配置</small></span>
+    </button>`);
+    box.innerHTML = tabs.join('');
+  }
+
+  async function loadPlatformAccounts() {
+    const profile = $('platform-profile');
+    if (!profile) return;
+    profile.innerHTML = '<div class="platform-profile-loading"><span class="spin">◌</span> 正在读取账号状态…</div>';
     try {
-      const r = await api('/engine/login', {
-        method: 'POST',
-        body: JSON.stringify({ username: u, password: p }),
-      });
-      if (r.ok) {
-        box.innerHTML = '<span style="color:var(--ok)">登录成功</span>，已保存账号 ' + esc(u) +
-          (r.configured && r.configured.length ? '；引擎里已有 Cookie 的平台：<b>' + esc(r.configured.join('、')) + '</b>' : '');
-        $('engine-password').value = '';
-        await checkEngine();
-      } else {
-        box.innerHTML = '<span style="color:var(--err)">登录失败：' + esc(r.detail) + '</span>' +
-          (r.saved_username ? '（仍保留原来保存的账号 ' + esc(r.saved_username) + '）' : '');
+      const r = await api('/platform-accounts');
+      state.platformAccounts = r.items || [];
+      if (state.activePlatform !== '__other__' && !visiblePlatformAccounts().some((item) => item.source === state.activePlatform)) {
+        state.activePlatform = visiblePlatformAccounts()[0]?.source || '__other__';
       }
-    } catch (err) { box.innerHTML = `<span style="color:var(--err)">${esc(err.message)}</span>`; }
+      renderPlatformTabs();
+      renderPlatformAccount();
+    } catch (err) {
+      profile.innerHTML = `<div class="platform-profile-empty"><b>读取账号失败</b><span>${esc(err.message)}</span></div>`;
+    }
   }
 
-  async function engineLogout() {
-    const box = $('engine-login-result');
-    try {
-      await api('/engine/logout', { method: 'POST' });
-      $('engine-username').value = '';
-      $('engine-password').value = '';
-      box.innerHTML = '已退出引擎登录，保存的账号密码也已清除。';
-      await checkEngine();
-    } catch (err) { box.innerHTML = `<span style="color:var(--err)">${esc(err.message)}</span>`; }
+  function switchPlatformAccount(source) {
+    if (source !== '__other__' && !visiblePlatformAccounts().some((item) => item.source === source)) return;
+    state.activePlatform = source;
+    if ($('platform-cookie-input')) $('platform-cookie-input').value = '';
+    if ($('platform-account-result')) $('platform-account-result').textContent = '';
+    renderPlatformTabs();
+    renderPlatformAccount();
   }
 
-  async function engineCookies() {
-    const box = $('engine-login-result');
-    try {
-      const r = await api('/engine/cookies');
-      box.innerHTML = r.ok
-        ? '引擎已配置 Cookie 的平台：<b>' + esc(r.configured.join('、')) + '</b>'
-        : esc(r.message);
-    } catch (err) { box.innerHTML = `<span style="color:var(--err)">${esc(err.message)}</span>`; }
+  function switchPlatformMethod(method) {
+    if (!['qr', 'cookie'].includes(method)) return;
+    state.activePlatformMethod = method;
+    document.querySelectorAll('.account-method-tab').forEach((el) => el.classList.toggle('active', el.id === `account-method-tab-${method}`));
+    ['qr', 'cookie'].forEach((key) => $('account-method-' + key)?.classList.toggle('hidden', key !== method));
   }
 
-  async function pushCookies() {
-    let mapping;
-    try { mapping = JSON.parse($('cookie-json').value || '{}'); }
-    catch (_) { toast('JSON 格式不正确'); return; }
-    if (!Object.keys(mapping).length) { toast('没有可写入的内容'); return; }
+  function renderPlatformAccount() {
+    const source = state.activePlatform;
+    const profileBox = $('platform-profile');
+    const panel = profileBox.closest('.platform-account-panel');
+    const loginBox = $('platform-login-box');
+    const otherBox = $('platform-other-box');
+
+    if (source === '__other__') {
+      panel?.classList.remove('is-authenticated');
+      panel?.classList.add('is-other');
+      profileBox.style.display = 'none';
+      loginBox.style.display = 'none';
+      otherBox.style.display = '';
+      otherBox.classList.remove('hidden');
+      const supported = state.platformAccounts.filter((item) => !(item.qr_sources || []).length);
+      $('other-platform-supported').innerHTML = supported.map((item) => `<span class="other-platform-chip ${item.configured ? 'configured' : ''}">
+        <i class="platform-logo ${esc(item.source)}">${esc(platformMeta(item.source).short)}</i>${esc(item.label)}${item.configured ? '<b>已配置</b>' : ''}
+      </span>`).join('');
+      return;
+    }
+
+    panel?.classList.remove('is-other');
+    otherBox.style.display = 'none';
+    otherBox.classList.add('hidden');
+    profileBox.style.display = '';
+    const meta = platformMeta(source);
+    const account = state.platformAccounts.find((item) => item.source === source) || {source, configured:false, valid:false, profile:{}};
+    const profile = account.profile || {};
+    const status = accountStatus(account);
+    const methodLabels = {qr:'官方扫码', wechat_qr:'微信扫码', cookie:'Cookie'};
+
+    const avatar = profile.avatar
+      ? `<img class="platform-avatar" width="96" height="96" src="${esc(profile.avatar)}" alt="${esc(profile.nickname || meta.label)}头像">`
+      : `<div class="platform-avatar platform-avatar-fallback ${esc(source)}">${esc(meta.short)}</div>`;
+    const supportsQR = (account.qr_sources || []).length > 0;
+    const showLogin = !account.valid && supportsQR;
+    panel?.classList.toggle('is-authenticated', !!account.valid);
+    loginBox?.classList.toggle('hidden', !showLogin);
+    if (loginBox) loginBox.style.display = showLogin ? '' : 'none';
+    profileBox.className = `platform-profile ${account.valid ? 'authenticated' : 'signed-out'} ${source}`;
+
+    if (account.valid) {
+      const vip = Number(profile.vip_type) > 0 ? '<span class="profile-vip">VIP</span>' : '';
+      profileBox.innerHTML = `
+        <div class="platform-profile-hero">
+          <div class="platform-avatar-ring">${avatar}</div>
+          <div class="platform-identity">
+            <div class="platform-name-line"><h3>${esc(profile.nickname || `${meta.label}用户`)}</h3>${vip}</div>
+            <div class="profile-id">${esc(meta.label)} · 用户 ID ${esc(profile.user_id || '—')}</div>
+            <span class="account-state ${status.cls}"><i></i>${esc(status.label)}</span>
+          </div>
+        </div>
+        <div class="platform-profile-stats">
+          <div><span>当前平台</span><strong>${esc(meta.label)}</strong></div>
+          <div><span>登录方式</span><strong>${esc(methodLabels[account.login_method] || '已保存凭据')}</strong></div>
+          <div><span>凭据状态</span><strong>已加密保存</strong></div>
+        </div>
+        <div class="platform-profile-actions">
+          <button class="btn account-btn danger platform-logout" onclick="App.logoutPlatformAccount()">退出登录</button>
+        </div>`;
+    } else {
+      const emptyText = account.configured
+        ? (supportsQR ? '当前凭据已失效，请在右侧重新扫码或更新 Cookie。' : '当前凭据已失效，请前往“其他平台”更新 JSON。')
+        : '登录后即可读取你的个人歌单、收藏夹与关注内容。';
+      profileBox.innerHTML = `
+        <div class="signed-out-mark ${esc(source)}">${esc(meta.short)}</div>
+        <span class="account-state ${status.cls}"><i></i>${esc(status.label)}</span>
+        <h3>${esc(meta.label)}</h3>
+        <p>${esc(emptyText)}</p>
+        <div class="row signed-out-actions">
+          ${!supportsQR ? '<button class="btn account-btn secondary" onclick="App.switchPlatformAccount(\'__other__\')">前往其他平台配置</button>' : ''}
+          ${account.configured ? `<button class="btn account-btn danger" onclick="App.logoutPlatformAccount()">清除失效凭据</button>` : ''}
+        </div>`;
+    }
+
+    const qrHint = $('platform-qr-hint');
+    if (qrHint) qrHint.textContent = `请使用${meta.app}扫码；二维码只绑定当前站内用户和本次登录。`;
+    const actions = $('platform-qr-actions');
+    actions.innerHTML = (account.qr_sources || []).map((qrSource, index) =>
+      `<button class="btn account-btn ${index === 0 ? 'primary' : 'secondary'} qr-login-btn" onclick="App.startPlatformLogin('${esc(qrSource)}')">${esc(QR_LABELS[qrSource] || '生成登录二维码')}</button>`
+    ).join('');
+    $('platform-cookie-input').placeholder = `${meta.label} Cookie，例如：${meta.cookie}`;
+    switchPlatformMethod(state.activePlatformMethod);
+  }
+
+  async function saveOtherPlatformCookies() {
+    const input = $('other-cookie-json'), result = $('other-cookie-result'), button = $('other-cookie-save');
+    let cookies;
     try {
-      await api('/engine/cookies', { method: 'POST', body: JSON.stringify({ cookies: mapping }) });
-      toast('已写入引擎，之后下载的音质会按新 Cookie 生效');
-      engineCookies();
-    } catch (err) { toast('写入失败：' + err.message); }
+      cookies = JSON.parse(input.value || '{}');
+      if (!cookies || Array.isArray(cookies) || typeof cookies !== 'object' || !Object.keys(cookies).length) throw new Error('请输入至少一个平台 Cookie');
+    } catch (err) {
+      result.innerHTML = `<span style="color:var(--err)">JSON 格式错误：${esc(err.message)}</span>`;
+      return;
+    }
+    button.disabled = true;
+    result.textContent = '正在验证并保存…';
+    try {
+      const response = await api('/platform-accounts/other-cookies', {method:'POST', body:JSON.stringify({cookies})});
+      const savedLabels = (response.saved || []).map((key) => platformMeta(key).label);
+      const errors = Object.entries(response.errors || {}).map(([key, value]) => `${platformMeta(key).label || key}：${value}`);
+      if (savedLabels.length) input.value = '';
+      result.innerHTML = [
+        savedLabels.length ? `<span style="color:var(--ok)">已保存：${esc(savedLabels.join('、'))}</span>` : '',
+        errors.length ? `<span style="color:var(--err)">${esc(errors.join('；'))}</span>` : '',
+      ].filter(Boolean).join('<br>');
+      await loadPlatformAccounts();
+    } catch (err) { result.innerHTML = `<span style="color:var(--err)">${esc(err.message)}</span>`; }
+    finally { button.disabled = false; }
+  }
+
+  async function savePlatformCookie() {
+    const source = state.activePlatform;
+    const input = $('platform-cookie-input');
+    const result = $('platform-account-result');
+    const button = $('platform-cookie-save');
+    const cookie = input.value.trim();
+    if (!cookie) { result.innerHTML = '<span style="color:var(--warn)">请先粘贴完整 Cookie。</span>'; return; }
+    button.disabled = true;
+    result.textContent = '正在验证账号…';
+    try {
+      await api(`/platform-accounts/${source}/cookie`, {method:'POST', body:JSON.stringify({cookie})});
+      input.value = '';
+      result.innerHTML = '<span style="color:var(--ok)">验证成功，账号凭据已加密保存。</span>';
+      await loadPlatformAccounts();
+    } catch (err) {
+      result.innerHTML = `<span style="color:var(--err)">${esc(err.message)}</span>`;
+    } finally { button.disabled = false; }
+  }
+
+  async function logoutPlatformAccount() {
+    const source = state.activePlatform;
+    const label = platformMeta(source).label;
+    if (!confirm(`确定退出 ${label}？该操作只清除当前用户的 ${label} 凭据，不会删除已有订阅和音乐。`)) return;
+    try {
+      await api(`/platform-accounts/${source}`, {method:'DELETE'});
+      await loadPlatformAccounts();
+      toast(`已退出 ${label}`);
+    } catch (err) { $('platform-account-result').innerHTML = `<span style="color:var(--err)">${esc(err.message)}</span>`; }
+  }
+
+  async function startPlatformLogin(source) {
+    closePlatformLogin();
+    const modal = $('platform-login-modal');
+    modal.classList.add('show');
+    $('platform-login-title').textContent = ({
+      netease:'网易云音乐', qq:'QQ 音乐', qq_wx:'微信登录 QQ 音乐', kugou:'酷狗音乐',
+      bilibili:'哔哩哔哩', soda:'汽水音乐',
+    }[source] || source) + '扫码登录';
+    $('platform-login-loading').style.display = '';
+    $('platform-login-image').style.display = 'none';
+    $('platform-login-status').className = 'notice info';
+    $('platform-login-status').textContent = '正在生成二维码…';
+    try {
+      const session = await api(`/platform-login/${source}/start`, {method:'POST'});
+      state.platformLogin = {source, key:session.key, timer:null};
+      $('platform-login-loading').style.display = 'none';
+      if (session.image_url) { $('platform-login-image').src=session.image_url; $('platform-login-image').style.display='block'; }
+      $('platform-login-status').textContent = '请使用对应官方 App 扫码并在手机上确认';
+      state.platformLogin.timer = setInterval(pollPlatformLogin, 2500);
+      pollPlatformLogin();
+    } catch (err) {
+      $('platform-login-loading').style.display = 'none';
+      $('platform-login-status').className = 'notice err';
+      $('platform-login-status').textContent = err.message;
+    }
+  }
+
+  async function pollPlatformLogin() {
+    const stateNow = state.platformLogin;
+    if (!stateNow || stateNow.busy) return;
+    stateNow.busy = true;
+    try {
+      const r = await api(`/platform-login/${stateNow.source}/check`, {method:'POST',body:JSON.stringify({key:stateNow.key})});
+      const labels = {waiting:'等待扫码',scanned:'已扫码，请在手机确认',success:'登录成功，Cookie 已加密保存',expired:'二维码已过期',failed:'登录失败'};
+      $('platform-login-status').textContent = labels[r.status] || r.message || r.status;
+      $('platform-login-status').className = 'notice ' + (r.status === 'success' ? '' : (r.status === 'failed' || r.status === 'expired' ? 'err' : 'info'));
+      if (['success','expired','failed'].includes(r.status)) {
+        clearInterval(stateNow.timer); stateNow.timer=null;
+        if (r.status === 'success') {
+          await loadPlatformAccounts();
+          $('platform-account-result').innerHTML = '<span style="color:var(--ok)">扫码登录成功，账号凭据已加密保存。</span>';
+        }
+      }
+    } catch (err) {
+      $('platform-login-status').textContent = err.message;
+      $('platform-login-status').className = 'notice err';
+      clearInterval(stateNow.timer); stateNow.timer=null;
+    } finally { stateNow.busy=false; }
+  }
+
+  function closePlatformLogin() {
+    if (state.platformLogin?.timer) clearInterval(state.platformLogin.timer);
+    state.platformLogin = null;
+    $('platform-login-modal')?.classList.remove('show');
+  }
+
+  async function loadUsers() {
+    if (state.user?.role !== 'admin') return;
+    try {
+      const r = await api('/auth/users');
+      $('user-list-body').innerHTML = (r.items || []).map((u) => `<tr>
+        <td><b>${esc(u.display_name || u.username)}</b><div class="small muted mono">${esc(u.username)} · ${esc(u.id)}</div></td>
+        <td>${esc(u.role)}</td><td><span class="status ${u.enabled ? 'downloaded':'skipped'}">${u.enabled?'启用':'停用'}</span></td>
+        <td class="small">${esc(u.created_at)}</td>
+        <td><button class="btn small" onclick="App.toggleUser('${esc(u.id)}', ${u.enabled?'false':'true'})">${u.enabled?'停用':'启用'}</button>
+        <button class="btn small" onclick="App.resetUserPassword('${esc(u.id)}')">重置密码</button></td></tr>`).join('');
+    } catch (err) { toast(err.message); }
+  }
+
+  async function createUser() {
+    try {
+      await api('/auth/users', {method:'POST', body:JSON.stringify({
+        username:$('new-user-name').value.trim(), display_name:$('new-user-display').value.trim(),
+        role:$('new-user-role').value, password:$('new-user-password').value,
+      })});
+      $('new-user-name').value=''; $('new-user-display').value=''; $('new-user-password').value='';
+      toast('用户已创建'); await loadUsers();
+    } catch (err) { toast(err.message); }
+  }
+
+  async function toggleUser(id, enabled) {
+    try { await api('/auth/users/'+id,{method:'PATCH',body:JSON.stringify({enabled})}); await loadUsers(); }
+    catch(err){toast(err.message);}
+  }
+
+  async function resetUserPassword(id) {
+    const password = prompt('输入新密码（至少 8 位）');
+    if (!password) return;
+    try { await api('/auth/users/'+id,{method:'PATCH',body:JSON.stringify({password})}); toast('密码已重置'); }
+    catch(err){toast(err.message);}
   }
 
   /* ------------------------------------------------------------ 监控弹窗 */
@@ -655,7 +1114,7 @@ const App = (() => {
     const kind = monitor ? monitor.kind : (preset?.kind || 'chart');
     $('m-kind').value = kind;
     $('m-name').value = monitor ? monitor.name : '';
-    $('m-quality').value = monitor ? monitor.quality : ($('s-quality').value || 'lossless');
+    $('m-quality').value = monitor ? monitor.quality : ($('s-quality').value || 'master');
     $('m-fallback').value = monitor ? monitor.fallback : 'best_effort';
     $('m-interval').value = monitor ? monitor.interval_minutes : ($('s-interval').value || 360);
     $('m-max').value = monitor ? monitor.max_downloads : ($('s-max').value || 30);
@@ -697,6 +1156,9 @@ const App = (() => {
     $('m-artist-names').value = artists
       .map((a) => (a.name || '') + (a.sources && a.sources.length ? '|' + a.sources.join(',') : ''))
       .join('\n');
+    $('m-artist-page-size').value = monitor && monitor.kind === 'artist'
+      ? (monitor.target.page_size || 100)
+      : (preset?.page_size || 100);
 
     // 平台
     const sources = monitor ? monitor.sources : (preset?.sources || state.platforms.map((p) => p.key));
@@ -795,6 +1257,7 @@ const App = (() => {
         const srcs = x.name ? (x.link || '').split(',').map((s) => s.trim()).filter(Boolean) : [];
         return { name, sources: srcs };
       }).filter((a) => a.name);
+      target.page_size = Math.max(30, Math.min(1000, Number($('m-artist-page-size').value) || 100));
     } else {
       target.playlist_ids = [...state.favSel];
     }
@@ -860,7 +1323,7 @@ const App = (() => {
   }
 
   /* ------------------------------------------------------------ 启动 */
-  function init() {
+  async function init() {
     initTabs();
     document.querySelectorAll('nav.tabs button').forEach((b) => {
       if (b.dataset.tab === 'charts') b.addEventListener('click', renderCharts);
@@ -878,7 +1341,10 @@ const App = (() => {
         openMonitorModal(null, { kind: 'chart', custom: [state.resolvedChartEntry] });
       }
     });
-    loadBase().then(() => { checkEngine(); loadMonitors(); });
+    if (await initAuth()) loadBase().then(() => { checkEngine(); loadMonitors(); });
+    setInterval(() => {
+      if (document.querySelector('#page-records.active')) loadLxDownloads();
+    }, 2000);
   }
 
   document.addEventListener('DOMContentLoaded', init);
@@ -887,9 +1353,14 @@ const App = (() => {
     refreshAll, loadMonitors, runMonitor, previewMonitor, toggleMonitor, deleteMonitor, showRuns,
     verifyCharts, verifyChart, previewChart, monitorFromChart, resolveCustomChart, monitorFromCustomChart,
     resolvePlaylist, monitorFromPlaylist, loadFavorites, createFavoritesMonitor,
-    loadRuns, loadTracks, showRunLog, retryTracks, retryFailed,
-    loadSettings, saveSettings, engineLogin, engineLogout, engineCookies, pushCookies, checkEngine,
+    loadRuns, loadTracks, showRunLog, retryTracks, retryFailed, loadLxDownloads, clearLxDownloads,
+    loadSettings, saveSettings, checkEngine,
+    loadLxSettings, saveLxSettings, reloadLxSources, importLxSourceUrl, importLxSourceText,
+    importLxSourceFile, toggleLxSource, deleteLxSource,
     openMonitorModal, editMonitor, closeModal, saveMonitor, previewDraft, onKindChange,
     currentChartKeys,
+    submitAuth, logoutUser, loadUsers, createUser, toggleUser, resetUserPassword,
+    loadPlatformAccounts, switchPlatformAccount, switchPlatformMethod, savePlatformCookie, saveOtherPlatformCookies,
+    logoutPlatformAccount, startPlatformLogin, closePlatformLogin,
   };
 })();

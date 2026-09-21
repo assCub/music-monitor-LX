@@ -1,0 +1,23 @@
+music-monitor-LX
+================
+
+This repository is a derivative work based on:
+
+  Baey666/music-monitor
+  https://github.com/Baey666/music-monitor
+
+Original copyright:
+
+  Copyright (c) 2026 Baey666
+
+The original project and this derivative are distributed under the MIT
+License included in the LICENSE file. The original copyright and permission
+notice are retained as required by that license.
+
+Major changes in this derivative include replacing the go-music-dl download
+path with an LX Music source gateway, multi-user account and credential
+isolation, direct platform discovery, platform QR login, quality fallback,
+download progress, and expanded web configuration.
+
+The derivative project is maintained independently and is not endorsed by or
+officially supported by the original author.
