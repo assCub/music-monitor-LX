@@ -7,7 +7,7 @@
 #
 #  用法：
 #     ./scripts/deploy-nas.sh                                 # 按 .env 的 APP_VERSION 拉 v<版本号>
-#     ./scripts/deploy-nas.sh baey666/music-monitor:v1.0.1    # 指定镜像地址
+#     ./scripts/deploy-nas.sh yua0712/music-monitor-lx:v1.2.2 # 指定主服务镜像地址
 #     MONITOR_IMAGE=xxx docker compose ...                    # 也可直接改 .env
 #
 #  脚本是幂等的：重复执行只会重新拉取并重启容器，不会丢数据。
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 # 镜像仓库地址（不含 tag）。tag 由 .env 里的 APP_VERSION 派生，见下面第 2 步。
-DEFAULT_REPO="baey666/music-monitor"
+DEFAULT_REPO="yua0712/music-monitor-lx"
 
 # 可选：第一个参数直接指定完整镜像地址；不传则自动用 <DEFAULT_REPO>:v<APP_VERSION>。
 ARG_IMAGE="${1:-}"
@@ -63,7 +63,7 @@ envval() {
 #   传了参数   → 用参数指定的地址（写进 .env 固定下来）
 #   没传参数   → 移除 .env 里固定的 MONITOR_IMAGE，交给 compose 按 APP_VERSION 派生
 #                （这样以后 bump 版本号，即使不重跑本脚本也能跟着变）
-APP_VERSION="$(envval APP_VERSION 1.0.0)"
+APP_VERSION="$(envval APP_VERSION 1.2.2)"
 
 if [ -n "$ARG_IMAGE" ]; then
   IMAGE="$ARG_IMAGE"
@@ -110,12 +110,12 @@ if ! "${DC[@]}" pull; then
   warn "  sudo systemctl restart docker"
   warn ""
   warn "飞牛 / 群晖 / 威联通也可在「Docker 设置 → 镜像加速」里填 https://docker.1ms.run"
-  warn "注意：只有 docker.1ms.run 实测能代理「用户命名空间」镜像（如 baey666/xxx），"
+  warn "注意：只有 docker.1ms.run 实测能代理「用户命名空间」镜像（如 yua0712/xxx），"
   warn "      daocloud 只代理官方库镜像，拉用户镜像会 403。"
   warn ""
   warn "不想改全局配置的话，也可以把镜像地址写成带前缀的形式，"
   warn "也可以把镜像地址写成带前缀的形式："
-  warn "  docker.1ms.run/baey666/music-monitor:latest"
+  warn "  docker.1ms.run/yua0712/music-monitor-lx:latest"
   warn "--------------------------------------------------------------------"
   exit 1
 fi

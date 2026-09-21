@@ -9,7 +9,7 @@
 #  ── 触发方式 ───────────────────────────────────────────────────────────────
 #   · 推送 v* 形式的 tag（如 v1.0.1）→ 构建并推 :v1.0.1 和 :latest
 #       本地一条命令搞定： ./scripts/version.sh bump patch --push
-#   · Actions 页面手动触发 → 重建当前分支的 :latest（补推用的兜底）
+#   · Actions 页面手动触发 → 重建代码版本标签和各服务最新标签（补推用的兜底）
 #
 #  ── 前置配置（只需做一次）──────────────────────────────────────────────────
 #  1. Docker Hub 生成 Access Token（不要用登录密码）
@@ -20,7 +20,7 @@
 #        DOCKERHUB_TOKEN    = 上一步的 Access Token
 #     ⚠️ 常见错误：加到相邻的 Dependabot / Environments 标签页，那样 workflow 读不到。
 #
-#  镜像地址：<DOCKERHUB_USERNAME>/music-monitor
+#  镜像地址：<DOCKERHUB_USERNAME>/music-monitor-lx
 # ============================================================================
 name: Build and push to Docker Hub
 
@@ -32,6 +32,25 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: monitor
+            context: ./monitor
+            file: ./monitor/Dockerfile
+            version_prefix: v
+            latest_tag: latest
+          - service: lx-gateway
+            context: ./lx-gateway
+            file: ./lx-gateway/Dockerfile
+            version_prefix: lx-gateway-v
+            latest_tag: lx-gateway
+          - service: platform-auth
+            context: ./platform-auth
+            file: ./platform-auth/Dockerfile
+            version_prefix: platform-auth-v
+            latest_tag: platform-auth
 
     steps:
       - name: 检出代码
@@ -91,26 +110,21 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: 计算镜像标签
+      - name: 计算 ${{ matrix.service }} 镜像标签
         id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/music-monitor
-          # tag 触发 → v1.0.1 与 latest；手动触发 → 只有 latest
-          tags: |
-            type=semver,pattern=v{{version}}
-            type=raw,value=latest
+        run: |
+          REPO="${{ secrets.DOCKERHUB_USERNAME }}/music-monitor-lx"
+          echo "tags=${REPO}:${{ matrix.version_prefix }}${{ steps.ver.outputs.version }},${REPO}:${{ matrix.latest_tag }}" >> "$GITHUB_OUTPUT"
 
-      - name: 构建并推送
+      - name: 构建并推送 ${{ matrix.service }}
         uses: docker/build-push-action@v6
         with:
-          context: ./monitor
-          file: ./monitor/Dockerfile
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
           # 两种架构都构建，x86_64 和 ARM 的 NAS 都能用
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
           # 版本号跟着代码走，不在这里写死
           build-args: |
             APP_VERSION=${{ steps.ver.outputs.version }}

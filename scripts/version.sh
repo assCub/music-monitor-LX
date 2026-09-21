@@ -39,7 +39,7 @@ ENV_FILE=".env"
 CHANGELOG="CHANGELOG.md"
 
 # 镜像仓库（不含 tag），与 docker-compose.yml 的默认值保持一致
-DEFAULT_REPO="${MONITOR_REPO:-baey666/music-monitor}"
+DEFAULT_REPO="${MONITOR_REPO:-yua0712/music-monitor-lx}"
 
 info()  { printf '\033[36m[version]\033[0m %s\n' "$*"; }
 warn()  { printf '\033[33m[version]\033[0m %s\n' "$*" >&2; }

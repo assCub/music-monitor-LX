@@ -49,6 +49,9 @@ docker compose ps
 
 打开 `http://NAS-IP:9090`，首次访问创建管理员。管理员可在“设置 → 用户与权限”创建、停用和重置用户。
 
+预构建的 `amd64/arm64` 镜像统一发布到
+[Docker Hub：yua0712/music-monitor-lx](https://hub.docker.com/r/yua0712/music-monitor-lx)，主服务、LX 网关和扫码服务使用不同标签；Compose 已配置对应默认地址。
+
 ## 平台登录
 
 每位用户在“设置 → 我的平台账号”中独立登录：
