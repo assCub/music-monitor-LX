@@ -88,6 +88,12 @@ class PlatformLoginCheckIn(BaseModel):
     key: str
 
 
+class PlatformLoginActionIn(BaseModel):
+    key: str
+    action: str = Field(pattern="^(send_code|validate|up_sms)$")
+    code: str = ""
+
+
 class PlatformCookieIn(BaseModel):
     cookie: str
 
@@ -306,7 +312,10 @@ async def platform_login_start(source: str) -> dict[str, Any]:
         "user_id": current_user_id(), "source": source, "key": platform_key,
         "expires_at": now + _PLATFORM_LOGIN_TTL,
     }
-    return {**result, "key": session_id}
+    return {
+        "source": source, "key": session_id, "image_url": result.get("image_url", ""),
+        "expires_at": result.get("expires_at"),
+    }
 
 
 @router.post("/platform-login/{source}/check")
@@ -323,8 +332,54 @@ async def platform_login_check(source: str, payload: PlatformLoginCheckIn) -> di
         result = await platform_auth.check(source, str(session["key"]))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"检查扫码状态失败：{exc}") from exc
+    session["extra"] = dict(result.get("extra") or {})
     if result.get("status") in {"success", "expired", "failed"}:
         _platform_login_sessions.pop(payload.key, None)
+    return _public_platform_login_result(_save_platform_login_result(source, result))
+
+
+@router.post("/platform-login/{source}/action")
+async def platform_login_action(source: str, payload: PlatformLoginActionIn) -> dict[str, Any]:
+    """处理汽水音乐扫码后的短信二次验证。真实平台 key 与验证参数不下发到浏览器。"""
+    if source != "soda":
+        raise HTTPException(404, "该平台没有额外验证步骤")
+    session = _platform_login_sessions.get(payload.key)
+    if not session or session.get("user_id") != current_user_id() or session.get("source") != source:
+        raise HTTPException(404, "扫码会话不存在，请重新生成二维码")
+    if float(session.get("expires_at") or 0) <= time.monotonic():
+        _platform_login_sessions.pop(payload.key, None)
+        return {"status": "expired", "message": "二维码已过期，请重新扫码"}
+    extra = dict(session.get("extra") or {})
+    encrypt_uid = str(extra.get("encrypt_uid") or "")
+    verify_params = str(extra.get("verify_params") or "")
+    if not encrypt_uid:
+        raise HTTPException(409, "汽水尚未返回短信验证参数，请稍后重试或重新扫码")
+    real_key = str(session["key"])
+    if payload.action == "send_code":
+        action_key = f"{real_key}|send_code|{encrypt_uid}|{verify_params}"
+    elif payload.action == "up_sms":
+        action_key = f"{real_key}|up_sms|{encrypt_uid}|{verify_params}"
+    else:
+        code = payload.code.strip()
+        if not code.isdigit() or not 4 <= len(code) <= 8:
+            raise HTTPException(400, "请输入 4–8 位数字验证码")
+        action_key = f"{real_key}|validate|{encrypt_uid}|{verify_params}|{code}"
+    try:
+        result = await platform_auth.check(source, action_key)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"汽水二次验证失败：{exc}") from exc
+    new_extra = {**extra, **dict(result.get("extra") or {})}
+    if result.get("status") == "failed":
+        # 验证码输错后仍保留原会话，允许用户重新发送或输入，不必重新扫码。
+        new_extra["need_sms"] = "true"
+    result["extra"] = new_extra
+    session["extra"] = new_extra
+    if result.get("status") in {"success", "expired"}:
+        _platform_login_sessions.pop(payload.key, None)
+    return _public_platform_login_result(_save_platform_login_result(source, result))
+
+
+def _save_platform_login_result(source: str, result: dict[str, Any]) -> dict[str, Any]:
     if result.get("status") == "success":
         cookie = str(result.pop("cookie", "") or "").strip()
         cookies = result.pop("cookies", {}) or {}
@@ -341,6 +396,40 @@ async def platform_login_check(source: str, payload: PlatformLoginCheckIn) -> di
         result["configured"] = credential_store.configured(user_id)
         result["cookie_saved"] = True
     return result
+
+
+def _public_platform_login_result(result: dict[str, Any]) -> dict[str, Any]:
+    """只向浏览器暴露展示所需字段，隐藏真实 token 和平台协议验证参数。"""
+    raw_extra = dict(result.get("extra") or {})
+    allowed_extra = {
+        key: raw_extra[key] for key in (
+            "need_sms", "need_sms_code", "mobile", "sms_mode", "can_up_sms",
+            "need_user_sms", "up_sms_mobile", "up_sms_content", "retry_time",
+        ) if raw_extra.get(key) not in {None, ""}
+    }
+    status = str(result.get("status") or "waiting")
+    if allowed_extra.get("need_sms_code") == "true":
+        mobile = str(allowed_extra.get("mobile") or "")
+        message = f"验证码已发送{('至 ' + mobile) if mobile else ''}"
+    elif allowed_extra.get("need_sms") == "true":
+        message = "扫码确认成功，需要完成短信安全验证"
+    elif status == "waiting":
+        message = "等待扫码"
+    elif status == "scanned":
+        message = "已扫码，请在手机上确认"
+    elif status == "success":
+        message = "登录成功，账号凭据已加密保存"
+    elif status == "expired":
+        message = "二维码已过期，请重新生成"
+    else:
+        message = str(result.get("message") or "登录失败")
+    public = {"source": result.get("source", ""), "status": status, "message": message}
+    if allowed_extra:
+        public["extra"] = allowed_extra
+    for key in ("configured", "cookie_saved"):
+        if key in result:
+            public[key] = result[key]
+    return public
 
 
 @router.get("/playlists/resolve")

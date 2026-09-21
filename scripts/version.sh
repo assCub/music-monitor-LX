@@ -47,7 +47,7 @@ fatal() { printf '\033[31m[version]\033[0m %s\n' "$*" >&2; exit 1; }
 ok()    { printf '\033[32m   ok  \033[0m %s\n' "$*"; }
 bad()   { printf '\033[31m  FAIL \033[0m %s\n' "$*"; }
 
-[ -f "$INIT_FILE" ] || fatal "没找到 $INIT_FILE，请在仓库根目录执行（当前：$ROOT）"
+[ -f "$INIT_FILE" ] || fatal "没找到 ${INIT_FILE}，请在仓库根目录执行（当前：${ROOT}）"
 
 # ── 读 / 写权威版本 ─────────────────────────────────────────────────────────
 read_version() {
@@ -75,7 +75,7 @@ next_version() {
 assert_semver() {
   case "${1:-}" in
     [0-9]*.[0-9]*.[0-9]*) ;;
-    *) fatal "版本号不符合 x.y.z 格式：'${1:-}'（请检查 $INIT_FILE）" ;;
+    *) fatal "版本号不符合 x.y.z 格式：'${1:-}'（请检查 ${INIT_FILE}）" ;;
   esac
 }
 
@@ -109,7 +109,7 @@ set_versions() {
 add_changelog_entry() {
   local v="$1" date="$2" tmp
   if [ ! -f "$CHANGELOG" ]; then
-    warn "没有 $CHANGELOG，跳过更新日志（建议补一个）"
+    warn "没有 ${CHANGELOG}，跳过更新日志（建议补一个）"
     return 0
   fi
   tmp="$ROOT/.changelog.tmp.$$"
@@ -155,17 +155,17 @@ cmd_show() {
 cmd_check() {
   local v; v="$(read_version)"
   [ -n "$v" ] || fatal "读不到版本号，请检查 $INIT_FILE"
-  info "权威版本（$INIT_FILE）：$v"
+  info "权威版本（${INIT_FILE}）：${v}"
   local fail=0 got
 
   got="$(sed -n 's/^ARG APP_VERSION=//p' "$DOCKERFILE" 2>/dev/null | head -1)"
-  if [ "$got" = "$v" ]; then ok "Dockerfile        $got"; else bad "Dockerfile        期望 $v，实际 '${got:-缺失}'"; fail=1; fi
+  if [ "$got" = "$v" ]; then ok "Dockerfile        ${got}"; else bad "Dockerfile        期望 ${v}，实际 '${got:-缺失}'"; fail=1; fi
 
   local f
   for f in "$ENV_EXAMPLE" "$ENV_FILE"; do
-    [ -f "$f" ] || { info "跳过 $f（不存在）"; continue; }
+    [ -f "$f" ] || { info "跳过 ${f}（不存在）"; continue; }
     got="$(sed -n 's/^APP_VERSION=//p' "$f" | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d '[:space:]')"
-    if [ "$got" = "$v" ]; then ok "$f    $got"; else bad "$f    期望 $v，实际 '${got:-缺失}'"; fail=1; fi
+    if [ "$got" = "$v" ]; then ok "${f}    ${got}"; else bad "${f}    期望 ${v}，实际 '${got:-缺失}'"; fail=1; fi
   done
 
   if [ -f "$CHANGELOG" ]; then
@@ -199,7 +199,7 @@ cmd_bump() {
   new="$(next_version "$cur" "$part")"
 
   local today; today="$(date +%F)"
-  info "版本：$cur  ->  $new   （$today）"
+  info "版本：$cur  ->  $new   （${today}）"
 
   # 工作区脏时提醒（bump 会生成提交）
   if [ "$NO_COMMIT" = "0" ] && [ -n "$(git status --porcelain 2>/dev/null || true)" ]; then
@@ -209,12 +209,12 @@ cmd_bump() {
   fi
 
   if [ "$NO_COMMIT" = "1" ]; then
-    confirm "确认把版本号改为 $new（不提交、不打 tag）？" || { info "已取消"; exit 0; }
+    confirm "确认把版本号改为 ${new}（不提交、不打 tag）？" || { info "已取消"; exit 0; }
   else
     if git rev-parse -q --verify "refs/tags/v$new" >/dev/null 2>&1; then
       fatal "git tag v$new 已存在，换个递增类型或先删除该 tag"
     fi
-    confirm "确认发布 v$new（改版本 + 提交 + 打 tag）？" || { info "已取消"; exit 0; }
+    confirm "确认发布 v${new}（改版本 + 提交 + 打 tag）？" || { info "已取消"; exit 0; }
   fi
 
   write_version "$new"
@@ -274,5 +274,5 @@ case "$CMD" in
   -h|--help|help)
     sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     ;;
-  *)           fatal "未知命令：$CMD（可用：show / check / sync / bump）" ;;
+  *)           fatal "未知命令：${CMD}（可用：show / check / sync / bump）" ;;
 esac

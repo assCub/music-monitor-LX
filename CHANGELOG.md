@@ -14,10 +14,18 @@
 ./scripts/version.sh check         # 校验各处版本号是否一致
 ```
 
-镜像 tag 由 `docker-compose.yml` 从 `.env` 的 `APP_VERSION` 派生，形如 `baey666/music-monitor:v1.0.0`，
-同时会推送一个 `latest`。
+镜像 tag 由 `docker-compose.yml` 从 `.env` 的 `APP_VERSION` 派生，统一发布到
+`yua0712/music-monitor-lx`，同时维护各服务的最新标签。
 
 ## [Unreleased]
+
+## [1.2.3] - 2026-09-21
+
+### 修复
+
+- 修复汽水音乐扫码确认后一直显示“待手机确认”的问题：识别平台短信二次验证，支持发送并填写验证码或按提示完成上行短信验证。
+- 扫码状态不再用固定文字覆盖平台返回结果；网易云、QQ、微信 QQ、酷狗、哔哩哔哩和汽水均显示统一、可读的中文状态。
+- 真实扫码 token、汽水 `encrypt_uid` 和验证参数全部保留在服务端，浏览器只接收展示所需的脱敏信息。
 
 ## [1.2.2] - 2026-09-16
 

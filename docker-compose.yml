@@ -9,7 +9,7 @@
 
 services:
   platform-auth:
-    image: ${PLATFORM_AUTH_IMAGE:-yua0712/music-monitor-lx:platform-auth-v${APP_VERSION:-1.2.2}}
+    image: ${PLATFORM_AUTH_IMAGE:-yua0712/music-monitor-lx:platform-auth-v${APP_VERSION:-1.2.3}}
     build:
       context: ./platform-auth
     container_name: music-monitor-platform-auth
@@ -21,7 +21,7 @@ services:
 
   # LX Music 音源网关：加载 config/lx-sources 中的 .js 音源脚本，并负责取链/降档/落盘。
   lx-gateway:
-    image: ${LX_GATEWAY_IMAGE:-yua0712/music-monitor-lx:lx-gateway-v${APP_VERSION:-1.2.2}}
+    image: ${LX_GATEWAY_IMAGE:-yua0712/music-monitor-lx:lx-gateway-v${APP_VERSION:-1.2.3}}
     build:
       context: ./lx-gateway
     container_name: music-monitor-lx-gateway
@@ -42,12 +42,12 @@ services:
 
   # 监控编排服务（本项目新增）。image 与 build 并存：有镜像直接用，加 --build 才走本地构建。
   monitor:
-    image: ${MONITOR_IMAGE:-yua0712/music-monitor-lx:v${APP_VERSION:-1.2.2}}
+    image: ${MONITOR_IMAGE:-yua0712/music-monitor-lx:v${APP_VERSION:-1.2.3}}
     build:
       context: ./monitor
       dockerfile: Dockerfile
       args:
-        APP_VERSION: ${APP_VERSION:-1.2.2}
+        APP_VERSION: ${APP_VERSION:-1.2.3}
         APT_MIRROR: ${APT_MIRROR:-}   # 构建期源加速（国内必开，见 .env.example）
         PIP_INDEX: ${PIP_INDEX:-}
     container_name: music-monitor
