@@ -14,8 +14,9 @@ from app.discovery import DirectDiscovery
 class MultiUserTests(unittest.TestCase):
     def test_account_platforms_separate_qr_and_json_configuration(self) -> None:
         fixed = {key for key, item in ACCOUNT_PLATFORMS.items() if item["fixed"]}
-        self.assertEqual(fixed, {"netease", "qq", "kugou", "bilibili", "soda"})
-        self.assertEqual(QR_LOGIN_SOURCES, {"netease", "qq", "qq_wx", "kugou", "bilibili", "soda"})
+        self.assertEqual(fixed, {"netease", "qq", "kugou", "bilibili"})
+        self.assertEqual(QR_LOGIN_SOURCES, {"netease", "qq", "qq_wx", "kugou", "bilibili"})
+        self.assertFalse(ACCOUNT_PLATFORMS["soda"]["qr_sources"])
         self.assertFalse(ACCOUNT_PLATFORMS["kuwo"]["qr_sources"])
         self.assertFalse(ACCOUNT_PLATFORMS["migu"]["qr_sources"])
         self.assertTrue(DirectDiscovery._stored_account("kuwo", "kw_token=test")["valid"])

@@ -25,7 +25,7 @@ type checkFn func(string) (*model.QRLoginResult, error)
 func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, 200, map[string]any{"ok": true, "sources": []string{"netease", "qq", "qq_wx", "kugou", "bilibili", "soda"}})
+		writeJSON(w, 200, map[string]any{"ok": true, "sources": []string{"netease", "qq", "qq_wx", "kugou", "bilibili"}})
 	})
 	mux.HandleFunc("POST /api/qr/{source}", createQR)
 	mux.HandleFunc("GET /api/qr/{source}", checkQR)
@@ -125,8 +125,6 @@ func provider(source string) (createFn, checkFn, bool) {
 		return kugou.CreateQRLogin, kugou.CheckQRLogin, true
 	case "bilibili":
 		return bilibili.CreateQRLogin, bilibili.CheckQRLogin, true
-	case "soda":
-		return soda.CreateQRLogin, soda.CheckQRLogin, true
 	default:
 		return nil, nil, false
 	}

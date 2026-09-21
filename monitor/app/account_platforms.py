@@ -30,8 +30,8 @@ ACCOUNT_PLATFORMS: dict[str, dict[str, Any]] = {
         "cookie_hint": "SESSDATA=...; bili_jct=...; DedeUserID=...",
     },
     "soda": {
-        "source": "soda", "label": "汽水音乐", "short": "汽", "fixed": True,
-        "qr_sources": ["soda"], "cookie": True, "verified_profile": False,
+        "source": "soda", "label": "汽水音乐", "short": "汽", "fixed": False,
+        "qr_sources": [], "cookie": True, "verified_profile": False,
         "cookie_hint": "sessionid=...; uid_tt=...",
     },
     "kuwo": {

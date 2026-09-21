@@ -9,7 +9,7 @@ name: music-monitor-lx
 
 services:
   platform-auth:
-    image: ${PLATFORM_AUTH_IMAGE:-yua0712/music-monitor-lx:platform-auth-v${APP_VERSION:-1.2.3}}
+    image: ${PLATFORM_AUTH_IMAGE:-yua0712/music-monitor-lx:platform-auth-v${APP_VERSION:-1.2.4}}
     container_name: music-monitor-platform-auth
     restart: unless-stopped
     expose:
@@ -19,7 +19,7 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
 
   lx-gateway:
-    image: ${LX_GATEWAY_IMAGE:-yua0712/music-monitor-lx:lx-gateway-v${APP_VERSION:-1.2.3}}
+    image: ${LX_GATEWAY_IMAGE:-yua0712/music-monitor-lx:lx-gateway-v${APP_VERSION:-1.2.4}}
     container_name: music-monitor-lx-gateway
     restart: unless-stopped
     expose:
@@ -38,7 +38,7 @@ services:
     user: "${PUID:-1000}:${PGID:-1000}"
 
   monitor:
-    image: ${MONITOR_IMAGE:-yua0712/music-monitor-lx:v${APP_VERSION:-1.2.3}}
+    image: ${MONITOR_IMAGE:-yua0712/music-monitor-lx:v${APP_VERSION:-1.2.4}}
     container_name: music-monitor
     restart: unless-stopped
     ports:

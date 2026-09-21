@@ -12,7 +12,7 @@ ARG PIP_INDEX=
 # OCI 元数据（便于镜像仓库展示与追溯）
 # APP_VERSION 由 docker-compose build args / CI 注入，默认值与 app/__init__.py 的
 # __version__ 保持一致；改版本请用 scripts/version.sh bump，勿手改此处。
-ARG APP_VERSION=1.2.3
+ARG APP_VERSION=1.2.4
 LABEL org.opencontainers.image.title="music-monitor" \
       org.opencontainers.image.description="多用户榜单/歌单/歌手订阅与 LX 自动下载服务" \
       org.opencontainers.image.version="${APP_VERSION}" \
@@ -35,12 +35,10 @@ RUN if [ -n "$APT_MIRROR" ]; then \
       done; \
     fi
 
-# 时区与基础工具（curl 便于容器内自检）
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends tzdata curl \
-    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
-    && echo $TZ > /etc/timezone \
-    && rm -rf /var/lib/apt/lists/*
+# python:slim 已包含系统时区数据；健康检查直接使用 Python 标准库，
+# 避免为了 curl 在每次构建时依赖外部 apt 仓库。
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone
 
 COPY requirements.txt .
 # 可选：pip 换国内源
@@ -59,6 +57,6 @@ RUN mkdir -p /app/data && chmod 777 /app/data
 EXPOSE 9090
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:9090/api/healthz || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9090/api/healthz', timeout=4)" || exit 1
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9090"]

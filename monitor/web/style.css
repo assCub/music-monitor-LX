@@ -158,24 +158,6 @@ pre.log {
 }
 .modal h2 { margin: 0 0 14px; font-size: 16px; }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
-.platform-login-mfa { margin-top: 12px; padding: 15px; border: 1px solid rgba(167,139,250,.3); border-radius: 15px; background: linear-gradient(145deg, rgba(76,29,149,.16), rgba(15,23,42,.72)); text-align: left; }
-.mfa-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 13px; }
-.mfa-brand-logo { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 38px; border-radius: 12px; background: linear-gradient(145deg, #a78bfa, #7c3aed); color: white; font-size: 16px; font-weight: 900; box-shadow: 0 9px 20px rgba(109,40,217,.28); }
-.mfa-brand > div { display: flex; flex-direction: column; }
-.mfa-brand b { font-size: 14px; }
-.mfa-brand small { color: var(--muted); font-size: 10px; }
-.mfa-steps { display: flex; align-items: center; gap: 8px; margin-bottom: 13px; color: var(--muted); font-size: 10px; }
-.mfa-steps i { height: 1px; flex: 1; background: rgba(167,139,250,.28); }
-.mfa-steps .done { color: #86efac; }
-.mfa-steps .active { color: #c4b5fd; }
-.up-sms-box { display: grid; gap: 8px; margin-top: 10px; }
-.mfa-copy-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,.04); }
-.mfa-copy-row span { color: var(--muted); font-size: 12px; }
-.mfa-copy-row b { max-width: 68%; overflow-wrap: anywhere; color: var(--text); font-weight: 600; text-align: right; }
-.mfa-code-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-top: 10px; }
-.mfa-code-row input { min-width: 0; }
-.mfa-code-input { height: 40px; font-size: 18px !important; font-weight: 700; letter-spacing: .18em; text-align: center; }
-.mfa-submit { background: linear-gradient(135deg, #a78bfa, #7c3aed) !important; color: white !important; }
 
 .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
 .muted { color: var(--muted); }

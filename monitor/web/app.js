@@ -804,7 +804,7 @@ const App = (() => {
 
   const QR_LABELS = {
     netease:'生成网易云二维码', qq:'使用 QQ 扫码', qq_wx:'使用微信扫码',
-    kugou:'生成酷狗二维码', bilibili:'生成哔哩哔哩二维码', soda:'生成汽水音乐二维码',
+    kugou:'生成酷狗二维码', bilibili:'生成哔哩哔哩二维码',
   };
 
   function platformMeta(source) {
@@ -1019,12 +1019,10 @@ const App = (() => {
     modal.classList.add('show');
     $('platform-login-title').textContent = ({
       netease:'网易云音乐', qq:'QQ 音乐', qq_wx:'微信登录 QQ 音乐', kugou:'酷狗音乐',
-      bilibili:'哔哩哔哩', soda:'汽水音乐',
+      bilibili:'哔哩哔哩',
     }[source] || source) + '扫码登录';
     $('platform-login-loading').style.display = '';
     $('platform-login-image').style.display = 'none';
-    $('platform-login-mfa').style.display = 'none';
-    $('platform-login-code').value = '';
     $('platform-login-status').className = 'notice info';
     $('platform-login-status').textContent = '正在生成二维码…';
     try {
@@ -1064,70 +1062,18 @@ const App = (() => {
     $('platform-login-status').textContent = message && message.toLowerCase() !== 'success' ? message : (labels[r.status] || r.status || '请稍候');
     $('platform-login-status').className = 'notice ' + (r.status === 'success' ? '' : (r.status === 'failed' || r.status === 'expired' ? 'err' : 'info'));
 
-    const extra = r.extra || {};
-    if (extra.need_sms === 'true' || extra.need_sms === true) {
-      if (stateNow.timer) { clearInterval(stateNow.timer); stateNow.timer = null; }
-      stateNow.mfa = extra;
-      renderSodaMfa(extra);
-      return;
-    }
     if (['success','expired','failed'].includes(r.status)) {
       if (stateNow.timer) { clearInterval(stateNow.timer); stateNow.timer = null; }
       if (r.status === 'success') {
-        $('platform-login-mfa').style.display = 'none';
         await loadPlatformAccounts();
         $('platform-account-result').innerHTML = '<span style="color:var(--ok)">扫码登录成功，账号凭据已加密保存。</span>';
       }
     }
   }
 
-  function renderSodaMfa(extra) {
-    const box = $('platform-login-mfa');
-    box.style.display = '';
-    $('platform-login-mfa-text').textContent = extra.need_sms_code === 'true'
-      ? `验证码已发送${extra.mobile ? `至 ${extra.mobile}` : ''}，请输入后完成登录。`
-      : '手机确认已完成，还需要通过短信完成账号安全验证。';
-    const hasUpSms = !!(extra.up_sms_mobile || extra.up_sms_content);
-    const preferUpSms = extra.sms_mode === 'up' || extra.need_user_sms === 'true';
-    $('platform-login-up-sms').style.display = hasUpSms ? '' : 'none';
-    $('platform-login-sms-mobile').textContent = extra.up_sms_mobile || '—';
-    $('platform-login-sms-content').textContent = extra.up_sms_content || '—';
-    $('platform-login-code-box').style.display = preferUpSms && extra.can_up_sms !== 'true' ? 'none' : '';
-    $('platform-login-code-row').style.display = extra.need_sms_code === 'true' ? 'grid' : 'none';
-    $('platform-login-send-code').style.display = extra.need_sms_code === 'true' ? 'none' : '';
-  }
-
-  async function platformLoginAction(action) {
-    const stateNow = state.platformLogin;
-    if (!stateNow || stateNow.busy) return;
-    const code = $('platform-login-code').value.trim();
-    if (action === 'validate' && !/^\d{4,8}$/.test(code)) {
-      $('platform-login-status').className = 'notice err';
-      $('platform-login-status').textContent = '请输入 4–8 位数字验证码';
-      return;
-    }
-    stateNow.busy = true;
-    document.querySelectorAll('#platform-login-mfa button').forEach((button) => { button.disabled = true; });
-    $('platform-login-status').className = 'notice info';
-    $('platform-login-status').textContent = action === 'send_code' ? '正在发送验证码…' : '正在验证…';
-    try {
-      const r = await api(`/platform-login/${stateNow.source}/action`, {
-        method:'POST', body:JSON.stringify({key:stateNow.key, action, code}),
-      });
-      await handlePlatformLoginResult(r);
-    } catch (err) {
-      $('platform-login-status').className = 'notice err';
-      $('platform-login-status').textContent = err.message;
-    } finally {
-      stateNow.busy = false;
-      document.querySelectorAll('#platform-login-mfa button').forEach((button) => { button.disabled = false; });
-    }
-  }
-
   function closePlatformLogin() {
     if (state.platformLogin?.timer) clearInterval(state.platformLogin.timer);
     state.platformLogin = null;
-    if ($('platform-login-mfa')) $('platform-login-mfa').style.display = 'none';
     $('platform-login-modal')?.classList.remove('show');
   }
 
@@ -1423,6 +1369,6 @@ const App = (() => {
     currentChartKeys,
     submitAuth, logoutUser, loadUsers, createUser, toggleUser, resetUserPassword,
     loadPlatformAccounts, switchPlatformAccount, switchPlatformMethod, savePlatformCookie, saveOtherPlatformCookies,
-    logoutPlatformAccount, startPlatformLogin, platformLoginAction, closePlatformLogin,
+    logoutPlatformAccount, startPlatformLogin, closePlatformLogin,
   };
 })();

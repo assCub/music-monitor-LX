@@ -88,12 +88,6 @@ class PlatformLoginCheckIn(BaseModel):
     key: str
 
 
-class PlatformLoginActionIn(BaseModel):
-    key: str
-    action: str = Field(pattern="^(send_code|validate|up_sms)$")
-    code: str = ""
-
-
 class PlatformCookieIn(BaseModel):
     cookie: str
 
@@ -334,47 +328,6 @@ async def platform_login_check(source: str, payload: PlatformLoginCheckIn) -> di
         raise HTTPException(502, f"检查扫码状态失败：{exc}") from exc
     session["extra"] = dict(result.get("extra") or {})
     if result.get("status") in {"success", "expired", "failed"}:
-        _platform_login_sessions.pop(payload.key, None)
-    return _public_platform_login_result(_save_platform_login_result(source, result))
-
-
-@router.post("/platform-login/{source}/action")
-async def platform_login_action(source: str, payload: PlatformLoginActionIn) -> dict[str, Any]:
-    """处理汽水音乐扫码后的短信二次验证。真实平台 key 与验证参数不下发到浏览器。"""
-    if source != "soda":
-        raise HTTPException(404, "该平台没有额外验证步骤")
-    session = _platform_login_sessions.get(payload.key)
-    if not session or session.get("user_id") != current_user_id() or session.get("source") != source:
-        raise HTTPException(404, "扫码会话不存在，请重新生成二维码")
-    if float(session.get("expires_at") or 0) <= time.monotonic():
-        _platform_login_sessions.pop(payload.key, None)
-        return {"status": "expired", "message": "二维码已过期，请重新扫码"}
-    extra = dict(session.get("extra") or {})
-    encrypt_uid = str(extra.get("encrypt_uid") or "")
-    verify_params = str(extra.get("verify_params") or "")
-    if not encrypt_uid:
-        raise HTTPException(409, "汽水尚未返回短信验证参数，请稍后重试或重新扫码")
-    real_key = str(session["key"])
-    if payload.action == "send_code":
-        action_key = f"{real_key}|send_code|{encrypt_uid}|{verify_params}"
-    elif payload.action == "up_sms":
-        action_key = f"{real_key}|up_sms|{encrypt_uid}|{verify_params}"
-    else:
-        code = payload.code.strip()
-        if not code.isdigit() or not 4 <= len(code) <= 8:
-            raise HTTPException(400, "请输入 4–8 位数字验证码")
-        action_key = f"{real_key}|validate|{encrypt_uid}|{verify_params}|{code}"
-    try:
-        result = await platform_auth.check(source, action_key)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(502, f"汽水二次验证失败：{exc}") from exc
-    new_extra = {**extra, **dict(result.get("extra") or {})}
-    if result.get("status") == "failed":
-        # 验证码输错后仍保留原会话，允许用户重新发送或输入，不必重新扫码。
-        new_extra["need_sms"] = "true"
-    result["extra"] = new_extra
-    session["extra"] = new_extra
-    if result.get("status") in {"success", "expired"}:
         _platform_login_sessions.pop(payload.key, None)
     return _public_platform_login_result(_save_platform_login_result(source, result))
 

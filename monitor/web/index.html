@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>music-monitor · 榜单歌单监控自动下载</title>
-<link rel="stylesheet" href="/static/style.css?v=20260921-login-v4">
+<link rel="stylesheet" href="/static/style.css?v=20260921-platform-v5">
 </head>
 <body>
 
@@ -239,11 +239,11 @@
           </div>
           <div class="other-platform-supported" id="other-platform-supported"></div>
           <label class="field other-json-field"><span>平台 Cookie JSON</span>
-            <textarea id="other-cookie-json" class="cookie-input mono" autocomplete="off" spellcheck="false" placeholder='{"kuwo":"kw_token=...","migu":"完整 Cookie"}'></textarea>
+            <textarea id="other-cookie-json" class="cookie-input mono" autocomplete="off" spellcheck="false" placeholder='{"soda":"sessionid=...","kuwo":"kw_token=...","migu":"完整 Cookie"}'></textarea>
           </label>
           <div class="row">
             <button class="btn account-btn primary" id="other-cookie-save" onclick="App.saveOtherPlatformCookies()">验证并保存</button>
-            <span class="small muted">平台标识目前支持 kuwo、migu。</span>
+            <span class="small muted">平台标识目前支持 soda、kuwo、migu。</span>
           </div>
           <div id="other-cookie-result" class="small muted account-result"></div>
         </section>
@@ -333,27 +333,6 @@
     <div id="platform-login-loading" class="muted">正在生成二维码…</div>
     <img id="platform-login-image" alt="扫码二维码" style="display:none;width:min(300px,80vw);height:min(300px,80vw);margin:12px auto;border-radius:12px;background:white;padding:8px">
     <div id="platform-login-status" class="notice info">请稍候</div>
-    <div id="platform-login-mfa" class="platform-login-mfa" style="display:none">
-      <div class="mfa-brand">
-        <span class="mfa-brand-logo">汽</span>
-        <div><b>汽水音乐安全验证</b><small>保护你的账号安全</small></div>
-      </div>
-      <div class="mfa-steps"><span class="done">1 扫码确认</span><i></i><span class="active">2 短信验证</span></div>
-      <div id="platform-login-mfa-text" class="small"></div>
-      <div id="platform-login-up-sms" class="up-sms-box" style="display:none">
-        <div class="small muted">请使用绑定手机号发送短信</div>
-        <div class="mfa-copy-row"><span>收件号码</span><b class="mono" id="platform-login-sms-mobile">—</b></div>
-        <div class="mfa-copy-row"><span>短信内容</span><b class="mono" id="platform-login-sms-content">—</b></div>
-        <button class="btn account-btn primary" onclick="App.platformLoginAction('up_sms')">我已发送，继续验证</button>
-      </div>
-      <div id="platform-login-code-box" style="display:none">
-        <button class="btn account-btn secondary" id="platform-login-send-code" onclick="App.platformLoginAction('send_code')">发送手机验证码</button>
-        <div class="mfa-code-row" id="platform-login-code-row" style="display:none">
-          <input class="mfa-code-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" id="platform-login-code" placeholder="请输入验证码">
-          <button class="btn account-btn primary mfa-submit" onclick="App.platformLoginAction('validate')">完成验证</button>
-        </div>
-      </div>
-    </div>
     <div class="modal-actions"><button class="btn" onclick="App.closePlatformLogin()">关闭</button></div>
   </div>
 </div>
@@ -447,6 +426,6 @@
 
 <div id="toast" class="pill" style="display:none;position:fixed;bottom:22px;right:22px;z-index:99;padding:10px 16px;background:var(--panel);border-color:var(--accent);color:var(--text)"></div>
 
-<script src="/static/app.js?v=20260921-login-v4"></script>
+<script src="/static/app.js?v=20260921-platform-v5"></script>
 </body>
 </html>
