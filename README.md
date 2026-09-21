@@ -52,6 +52,9 @@ docker compose ps
 预构建的 `amd64/arm64` 镜像统一发布到
 [Docker Hub：yua0712/music-monitor-lx](https://hub.docker.com/r/yua0712/music-monitor-lx)，主服务、LX 网关和扫码服务使用不同标签；Compose 已配置对应默认地址。
 
+NAS 只拉镜像部署可直接使用 [docker-compose.nas.yml](docker-compose.nas.yml) 和
+[.env.nas.example](.env.nas.example)，无需克隆源码或在 NAS 上构建。
+
 ## 平台登录
 
 每位用户在“设置 → 我的平台账号”中独立登录：

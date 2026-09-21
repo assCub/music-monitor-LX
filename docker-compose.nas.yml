@@ -1,0 +1,74 @@
+# music-monitor-LX NAS 镜像部署版
+#
+# 1. 在同目录创建 .env，至少填写 CONFIG_DIR 和 MUSIC_DIR。
+# 2. 创建目录并把权限给 PUID:PGID。
+# 3. docker compose -f docker-compose.nas.yml pull
+# 4. docker compose -f docker-compose.nas.yml up -d
+
+name: music-monitor-lx
+
+services:
+  platform-auth:
+    image: ${PLATFORM_AUTH_IMAGE:-yua0712/music-monitor-lx:platform-auth-v1.2.2}
+    container_name: music-monitor-platform-auth
+    restart: unless-stopped
+    expose:
+      - "8091"
+    environment:
+      PORT: "8091"
+      TZ: ${TZ:-Asia/Shanghai}
+
+  lx-gateway:
+    image: ${LX_GATEWAY_IMAGE:-yua0712/music-monitor-lx:lx-gateway-v1.2.2}
+    container_name: music-monitor-lx-gateway
+    restart: unless-stopped
+    expose:
+      - "8090"
+    volumes:
+      - ${CONFIG_DIR:-./config}/lx:/config
+      - ${CONFIG_DIR:-./config}/lx-sources:/sources
+      - ${MUSIC_DIR:-./music}:/downloads
+    environment:
+      PORT: "8090"
+      LX_SOURCES_DIR: /sources
+      DOWNLOAD_ROOT: /downloads
+      LX_CONFIG_DIR: /config
+      LX_GATEWAY_TOKEN: ${LX_GATEWAY_TOKEN:-}
+      TZ: ${TZ:-Asia/Shanghai}
+    user: "${PUID:-1000}:${PGID:-1000}"
+
+  monitor:
+    image: ${MONITOR_IMAGE:-yua0712/music-monitor-lx:v1.2.2}
+    container_name: music-monitor
+    restart: unless-stopped
+    ports:
+      - "${MONITOR_PORT:-9090}:9090"
+    volumes:
+      - ${CONFIG_DIR:-./config}/monitor:/app/data
+      - ${CONFIG_DIR:-./config}/users:/app/users
+      - ${MUSIC_DIR:-./music}:/downloads:ro
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      USERS_CONFIG_DIR: /app/users
+      LX_GATEWAY_URL: http://lx-gateway:8090
+      PLATFORM_AUTH_URL: http://platform-auth:8091
+      LX_GATEWAY_TOKEN: ${LX_GATEWAY_TOKEN:-}
+      CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:-}
+      TICK_SECONDS: ${TICK_SECONDS:-60}
+      DOWNLOAD_CONCURRENCY: ${DOWNLOAD_CONCURRENCY:-1}
+      DOWNLOAD_RETRIES: ${DOWNLOAD_RETRIES:-2}
+      DOWNLOAD_BATCH: ${DOWNLOAD_BATCH:-8}
+      DOWNLOAD_BATCH_GAP: ${DOWNLOAD_BATCH_GAP:-3}
+      DOWNLOAD_TIMEOUT: ${DOWNLOAD_TIMEOUT:-300}
+      MAX_DOWNLOADS_PER_RUN: ${MAX_DOWNLOADS_PER_RUN:-0}
+      DEFAULT_QUALITY: ${DEFAULT_QUALITY:-master}
+      LX_PLATFORM_PRIORITY: ${LX_PLATFORM_PRIORITY:-tx,kg,kw,mg,wy}
+      LX_QUALITY_FLOOR: ${LX_QUALITY_FLOOR:-128k}
+      LX_SEARCH_LIMIT: ${LX_SEARCH_LIMIT:-30}
+      LX_MATCH_THRESHOLD: ${LX_MATCH_THRESHOLD:-0.76}
+      DOWNLOAD_ARTIST_DIR: ${DOWNLOAD_ARTIST_DIR:-true}
+    depends_on:
+      - lx-gateway
+      - platform-auth
+    user: "${PUID:-1000}:${PGID:-1000}"
+
