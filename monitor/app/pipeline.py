@@ -67,6 +67,19 @@ def _keywords(raw: str) -> list[str]:
     return [k.strip().lower() for k in re.split(r"[,，;；\s]+", raw or "") if k.strip()]
 
 
+def _fingerprint_aliases(name: str, artist: str) -> set[str]:
+    """返回正序与反序两种指纹，兼容历史反向文件名/元数据解析。"""
+    direct = fingerprint(name, artist)
+    reverse = fingerprint(artist, name)
+    return {direct, reverse}
+
+
+_AUDIO_EXTENSIONS = {
+    ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".ape", ".alac", ".wv",
+    ".dsf", ".dff", ".mka", ".mp4", ".webm",
+}
+
+
 def _file_exists(file_path: str) -> bool:
     if not file_path:
         return False
@@ -76,6 +89,9 @@ def _file_exists(file_path: str) -> bool:
         marker = "/home/appuser/data/downloads/"
         if marker in path.as_posix():
             candidates.append(Path(DOWNLOAD_ROOT) / path.as_posix().split(marker, 1)[1])
+        mount_marker = "/downloads/"
+        if path.as_posix().startswith(mount_marker):
+            candidates.append(Path(DOWNLOAD_ROOT) / path.as_posix().split(mount_marker, 1)[1])
         return any(candidate.is_file() for candidate in candidates)
     # 历史记录路径统一使用 data/downloads/...，对应 monitor 的只读 /downloads。
     if str(path).startswith("data/downloads/"):
@@ -87,24 +103,26 @@ def _file_exists(file_path: str) -> bool:
 
 
 # 下载目录索引（主干 → 真实文件名）。目录不会频繁变化，缓存 30 秒足够。
-_INDEX: dict[str, str] = {}
+_INDEX: dict[str, list[str]] = {}
 _INDEX_AT = 0.0
 _INDEX_TTL = 30.0
+_INDEX_ROOT = ""
 
 
-def _stem_index() -> dict[str, str]:
-    global _INDEX, _INDEX_AT
+def _stem_index() -> dict[str, list[str]]:
+    global _INDEX, _INDEX_AT, _INDEX_ROOT
     now = time.time()
-    if _INDEX and now - _INDEX_AT < _INDEX_TTL:
+    root = str(Path(DOWNLOAD_ROOT).resolve())
+    if _INDEX and root == _INDEX_ROOT and now - _INDEX_AT < _INDEX_TTL:
         return _INDEX
-    index: dict[str, str] = {}
+    index: dict[str, list[str]] = {}
     try:
-        for entry in Path(DOWNLOAD_ROOT).iterdir():
-            if entry.is_file():
-                index.setdefault(entry.stem, entry.name)
+        root_path = Path(DOWNLOAD_ROOT)
+        for entry in _iter_downloads():
+            index.setdefault(entry.stem, []).append(entry.relative_to(root_path).as_posix())
     except OSError:  # 目录不存在 / 没权限 —— 交给调用方按「找不到」处理
         index = {}
-    _INDEX, _INDEX_AT = index, now
+    _INDEX, _INDEX_AT, _INDEX_ROOT = index, now, root
     return index
 
 
@@ -121,19 +139,75 @@ def resolve_download_path(file_path: str) -> str:
         return ""
     matched = _stem_index().get(Path(name).stem)
     if matched:
-        return f"data/downloads/{matched}"
+        # 同名文件可能位于歌手目录/用户目录中，优先返回第一个真实相对路径。
+        for candidate in matched:
+            path = Path(DOWNLOAD_ROOT) / candidate
+            if path.is_file():
+                return f"data/downloads/{path.relative_to(Path(DOWNLOAD_ROOT)).as_posix()}"
     # 刚才下载完的可能还没进索引，按主干再查一次目录
     for entry in _iter_downloads():
         if entry.stem == Path(name).stem:
-            return f"data/downloads/{entry.name}"
+            return f"data/downloads/{entry.relative_to(Path(DOWNLOAD_ROOT)).as_posix()}"
     return ""
 
 
 def _iter_downloads() -> list[Path]:
     try:
-        return [e for e in Path(DOWNLOAD_ROOT).iterdir() if e.is_file()]
+        root = Path(DOWNLOAD_ROOT)
+        if not root.is_dir():
+            return []
+        return [
+            e for e in root.rglob("*")
+            if e.is_file() and e.suffix.lower() in _AUDIO_EXTENSIONS and not e.name.endswith(".part")
+        ]
     except OSError:
         return []
+
+
+def _existing_song_file(
+    song: dict[str, Any], *, user_id: str = "", entries: list[Path] | None = None
+) -> str:
+    """递归扫描下载目录，按歌名+歌手识别手工放入的已有音频。
+
+    默认文件名是「歌手 - 歌名」，也兼容「歌名 - 歌手」、歌手/歌名以及
+    用户自定义子目录；只要求歌名和歌手同时出现在文件名或其父目录中，避免
+    反向命名的文件被当成另一首歌。
+    """
+    title = _norm(str(song.get("name") or ""))
+    artist = _norm(str(song.get("artist") or song.get("singer") or ""))
+    if not title or not artist:
+        return ""
+    raw_artist = str(song.get("artist") or song.get("singer") or "")
+    artist_tokens = [
+        _norm(part)
+        for part in re.split(r"\s*(?:/|、|，|,|;|；|\||&|＆)\s*", raw_artist)
+        if _norm(part)
+    ] or [artist]
+    root = Path(DOWNLOAD_ROOT)
+    wanted_user = str(user_id or "").lower()
+    files = _iter_downloads() if entries is None else entries
+    for entry in files:
+        try:
+            relative = entry.relative_to(root)
+        except ValueError:
+            continue
+        parts = relative.parts
+        # 多用户模式下不能把别的用户目录里的歌当成当前用户的已有文件；
+        # 根目录下的旧版文件仍允许复用，兼容升级前的下载结果。
+        if wanted_user and "users" in {part.lower() for part in parts[:-1]}:
+            try:
+                users_index = next(i for i, part in enumerate(parts[:-1]) if part.lower() == "users")
+                if users_index + 1 >= len(parts) - 1 or parts[users_index + 1].lower() != wanted_user:
+                    continue
+            except StopIteration:
+                pass
+        stem = _norm(entry.stem)
+        ancestors = [_norm(part) for part in parts[:-1]]
+        if title not in stem:
+            continue
+        if any(token in stem or any(token in parent for parent in ancestors) for token in artist_tokens):
+            return f"data/downloads/{relative.as_posix()}"
+    return ""
 
 
 def _match_keywords(song: dict[str, Any], include: list[str], exclude: list[str]) -> bool:
@@ -353,12 +427,23 @@ async def run_monitor(
         exclude = _keywords(mon.get("exclude_kw", ""))
         existing = db.existing_song_keys(mon["id"])
         downloaded_paths = db.downloaded_tracks(mon["id"])
-        downloaded_prints = db.downloaded_fingerprints(mon["id"])
+        user_id = str(mon.get("user_id") or "")
+        download_files = _iter_downloads()
+        # 旧版本只按数据库的 downloaded 状态认定「已下载」，文件被移动/手工放入
+        # 子目录后会失去关联。这里重新校验每条记录对应的文件，并建立可复用指纹。
+        downloaded_prints: set[str] = set()
+        for row in db.downloaded_track_records(mon["id"]):
+            row_song = {"name": row.get("name", ""), "artist": row.get("artist", "")}
+            if _file_exists(row.get("file_path") or "") or _existing_song_file(
+                row_song, user_id=user_id, entries=download_files
+            ):
+                downloaded_prints.update(_fingerprint_aliases(row_song["name"], row_song["artist"]))
         quality = q.normalize_quality(mon.get("quality"))
         sources = mon.get("sources") or []
         auto_download = bool(mon.get("auto_download"))
 
         todo: list[dict[str, Any]] = []
+        todo_prints: set[str] = set()
         for s in songs:
             key = (str(s.get("source", "")), str(s.get("id", "")))
             if key in existing and key in downloaded_paths and _file_exists(downloaded_paths[key]):
@@ -368,14 +453,29 @@ async def run_monitor(
                 continue
             # 上一轮可能是在别的平台下到的（换源后曲目挂在新 source:id 下），
             # 用 (source, id) 找不到，得按「歌名+歌手」认出它已经下过。
-            if fingerprint(s.get("name", ""), s.get("artist", "")) in downloaded_prints:
+            song_prints = _fingerprint_aliases(s.get("name", ""), s.get("artist", ""))
+            if song_prints & downloaded_prints:
                 db.touch_track(mon["id"], s)
+                skipped += 1
+                continue
+            # 即使数据库里没有记录，也识别挂载目录中已经存在的音频，避免首次
+            # 建立监控或清库后再次下载整批歌曲。
+            existing_file = _existing_song_file(s, user_id=user_id, entries=download_files)
+            if existing_file:
+                db.upsert_track(mon["id"], s, status="downloaded", file_path=existing_file,
+                                quality_actual="本地已有文件")
+                downloaded_prints.update(song_prints)
                 skipped += 1
                 continue
             if not _match_keywords(s, include, exclude):
                 db.upsert_track(mon["id"], s, status="skipped", error="被关键词规则过滤")
                 skipped += 1
                 continue
+            # 同一轮发现来自不同平台的同一首歌时，只保留一份待下载任务。
+            if song_prints & todo_prints:
+                skipped += 1
+                continue
+            todo_prints.update(song_prints)
             # 不用 monitor 数据库的历史记录拦截：文件可能已被用户删除。
             todo.append(s)
 
@@ -407,21 +507,37 @@ async def run_monitor(
                 head = f"[{song.get('_origin', '')}] {song.get('name', '')} - {song.get('artist', '')}"
                 local_log: list[str] = [f"- {head}"]
                 try:
-                    lx_candidates = await lx_gateway.candidates(song, sources=sources, log_lines=local_log)
-                    if not lx_candidates:
-                        raise RuntimeError("LX 没有找到可信的同名歌曲候选")
-                    cand = max(lx_candidates, key=lambda item: float(item.get("similarity") or 0.0))
-                    if not auto_download:
-                        db.upsert_track(mon["id"], cand, status="pending", quality_actual=f"LX 目标 {quality}")
-                        local_log.append("  → 仅记录（未开启自动下载）")
-                        return
-                    user_id = str(mon.get("user_id") or "")
-                    result = await lx_gateway.download(
-                        song, candidates=lx_candidates, quality=quality, user_id=user_id,
-                        download_subdir=db.get_user_setting(user_id, "lx_download_subdir", ""),
-                        filename_template=db.get_user_setting(user_id, "lx_filename_template", settings.lx_filename_template),
-                        artist_dir=bool(db.get_user_setting(user_id, "lx_artist_dir", settings.lx_artist_dir)),
-                    )
+                    result = None
+                    cand = None
+                    retries_used = 0
+                    while True:
+                        try:
+                            lx_candidates = await lx_gateway.candidates(song, sources=sources, log_lines=local_log)
+                            if not lx_candidates:
+                                raise RuntimeError("LX 没有找到可信的同名歌曲候选")
+                            cand = max(lx_candidates, key=lambda item: float(item.get("similarity") or 0.0))
+                            if not auto_download:
+                                db.upsert_track(mon["id"], cand, status="pending", quality_actual=f"LX 目标 {quality}")
+                                local_log.append("  → 仅记录（未开启自动下载）")
+                                return
+                            result = await lx_gateway.download(
+                                song, candidates=lx_candidates, quality=quality, user_id=user_id,
+                                download_subdir=db.get_user_setting(user_id, "lx_download_subdir", ""),
+                                filename_template=db.get_user_setting(user_id, "lx_filename_template", settings.lx_filename_template),
+                                artist_dir=bool(db.get_user_setting(user_id, "lx_artist_dir", settings.lx_artist_dir)),
+                            )
+                            break
+                        except Exception as exc:  # noqa: BLE001
+                            retryable = bool(getattr(exc, "retryable", True))
+                            if not retryable or retries_used >= settings.download_retries:
+                                raise
+                            retries_used += 1
+                            delay = min(30.0, float(2 ** (retries_used - 1)))
+                            local_log.append(
+                                f"  ↻ 第 {retries_used} 次自动重试（{delay:g}s 后）：{exc}"
+                            )
+                            await asyncio.sleep(delay)
+                    assert cand is not None and result is not None
                     actual_quality = str(result.get("quality") or quality)
                     file_path = result.get("path") or ""
                     db.upsert_track(
@@ -442,7 +558,7 @@ async def run_monitor(
                     async with lock:
                         failed += 1
                     db.upsert_track(mon["id"], song, status="failed", error=str(exc)[:400])
-                    local_log.append(f"  × 失败（已重试 {settings.download_retries} 次）：{exc}")
+                    local_log.append(f"  × 失败（自动重试上限 {settings.download_retries} 次）：{exc}")
                 finally:
                     async with lock:
                         log_lines.extend(local_log)
@@ -540,17 +656,29 @@ async def redownload(
     """对单首歌曲（通常来自失败记录的重试）重新走一遍择优 + 下载。"""
     quality = q.normalize_quality(mon.get("quality"))
     log_lines: list[str] = []
-    candidates = await lx_gateway.candidates(song, sources=mon.get("sources") or [], log_lines=log_lines)
-    if not candidates:
-        db.upsert_track(mon["id"], song, status="failed", error="LX 没有找到可信的同名歌曲候选")
-        return {"ok": False, "message": "LX 没有找到可信的同名歌曲候选", "log": log_lines}
     user_id = str(mon.get("user_id") or "")
-    result = await lx_gateway.download(
-        song, candidates=candidates, quality=quality, user_id=user_id,
-        download_subdir=db.get_user_setting(user_id, "lx_download_subdir", ""),
-        filename_template=db.get_user_setting(user_id, "lx_filename_template", settings.lx_filename_template),
-        artist_dir=bool(db.get_user_setting(user_id, "lx_artist_dir", settings.lx_artist_dir)),
-    )
+    retries_used = 0
+    while True:
+        try:
+            candidates = await lx_gateway.candidates(song, sources=mon.get("sources") or [], log_lines=log_lines)
+            if not candidates:
+                raise RuntimeError("LX 没有找到可信的同名歌曲候选")
+            result = await lx_gateway.download(
+                song, candidates=candidates, quality=quality, user_id=user_id,
+                download_subdir=db.get_user_setting(user_id, "lx_download_subdir", ""),
+                filename_template=db.get_user_setting(user_id, "lx_filename_template", settings.lx_filename_template),
+                artist_dir=bool(db.get_user_setting(user_id, "lx_artist_dir", settings.lx_artist_dir)),
+            )
+            break
+        except Exception as exc:  # noqa: BLE001
+            retryable = bool(getattr(exc, "retryable", True))
+            if not retryable or retries_used >= settings.download_retries:
+                db.upsert_track(mon["id"], song, status="failed", error=str(exc)[:400])
+                return {"ok": False, "message": str(exc), "log": log_lines}
+            retries_used += 1
+            delay = min(30.0, float(2 ** (retries_used - 1)))
+            log_lines.append(f"↻ 第 {retries_used} 次自动重试（{delay:g}s 后）：{exc}")
+            await asyncio.sleep(delay)
     cand = max(candidates, key=lambda item: float(item.get("similarity") or 0.0))
     actual = str(result.get("quality") or quality)
     db.upsert_track(

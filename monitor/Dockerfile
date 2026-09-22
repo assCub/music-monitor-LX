@@ -12,7 +12,7 @@ ARG PIP_INDEX=
 # OCI 元数据（便于镜像仓库展示与追溯）
 # APP_VERSION 由 docker-compose build args / CI 注入，默认值与 app/__init__.py 的
 # __version__ 保持一致；改版本请用 scripts/version.sh bump，勿手改此处。
-ARG APP_VERSION=1.2.4
+ARG APP_VERSION=1.2.5
 LABEL org.opencontainers.image.title="music-monitor" \
       org.opencontainers.image.description="多用户榜单/歌单/歌手订阅与 LX 自动下载服务" \
       org.opencontainers.image.version="${APP_VERSION}" \

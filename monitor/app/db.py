@@ -446,6 +446,15 @@ class Database:
         )
         return {(r["source"], r["song_id"]): (r["file_path"] or "") for r in rows}
 
+    def downloaded_track_records(self, monitor_id: int) -> list[dict[str, Any]]:
+        """返回已下载记录的元数据，供本地文件存在性校验使用。"""
+        rows = self.query(
+            "SELECT source, song_id, name, artist, album, file_path FROM tracks "
+            "WHERE monitor_id = ? AND status = 'downloaded'",
+            (monitor_id,),
+        )
+        return [dict(row) for row in rows]
+
     def upsert_track(self, monitor_id: int, song: dict[str, Any], status: str, **kw: Any) -> None:
         ts = now_iso()
         self.execute(
